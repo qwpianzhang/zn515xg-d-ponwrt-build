@@ -2,41 +2,45 @@ name: Build PonWrt for ZNXT ZN515XG-D
 
 on:
   workflow_dispatch:
-    inputs:
-      core_profile:
-        description: 'PassWall core 体积策略'
-        required: true
-        default: 'lean'
-        type: choice
-        options:
-          - none
-          - lean
-          - full
+  push:
+    branches:
+      - main
 
 jobs:
   build:
     runs-on: ubuntu-22.04
     timeout-minutes: 350
 
+    env:
+      CORE_PROFILE: lean
+
     steps:
-      - name: Checkout this repo
+      - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Free disk space
+      - name: Maximize build space
         run: |
           sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
+          sudo rm -rf /usr/lib/mono /usr/share/swift /usr/local/julia* /usr/lib/jvm /usr/local/graalvm
+          sudo rm -rf /home/linuxbrew /usr/share/az* /opt/az /usr/lib/postgresql
+          sudo apt-get clean
           df -h /
 
-      - name: Restore ccache
+      - name: Cache ccache
         uses: actions/cache@v4
         with:
           path: ~/.ccache
-          key: ccache-zn515xg-d-${{ github.run_id }}
-          restore-keys: ccache-zn515xg-d-
+          key: ccache-zn515xg-d
+          restore-keys: ccache-zn515xg-d
+
+      - name: Cache source tarballs
+        uses: actions/cache@v4
+        with:
+          path: work/ponwrt/dl
+          key: dl-ponwrt-an7581
+          restore-keys: dl-ponwrt-an7581
 
       - name: Run build
-        env:
-          CORE_PROFILE: ${{ inputs.core_profile }}
         run: |
           chmod +x ./build.sh
           ./build.sh
@@ -45,18 +49,18 @@ jobs:
         if: always()
         run: |
           find out -maxdepth 2 -type f | head -50
-          echo '--- sizes ---'
+          echo '--- image sizes ---'
           find out -name '*.itb' -o -name '*.bin' | xargs -r ls -lh
 
       - name: Upload firmware
         if: success()
         uses: actions/upload-artifact@v4
         with:
-          name: zn515xg-d-ponwrt-${{ inputs.core_profile }}
+          name: zn515xg-d-ponwrt
           path: out/*/
           if-no-files-found: error
 
-      - name: Upload build log on failure
+      - name: Upload failure log
         if: failure()
         uses: actions/upload-artifact@v4
         with:

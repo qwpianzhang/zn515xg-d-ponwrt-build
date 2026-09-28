@@ -1,0 +1,5 @@
+* text=auto eol=lf
+*.sh text eol=lf
+*.seed text eol=lf
+*.conf text eol=lf
+*.yml text eol=lf
