@@ -1,0 +1,65 @@
+name: Build PonWrt for ZNXT ZN515XG-D
+
+on:
+  workflow_dispatch:
+    inputs:
+      core_profile:
+        description: 'PassWall core 体积策略'
+        required: true
+        default: 'lean'
+        type: choice
+        options:
+          - none
+          - lean
+          - full
+
+jobs:
+  build:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 350
+
+    steps:
+      - name: Checkout this repo
+        uses: actions/checkout@v4
+
+      - name: Free disk space
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
+          df -h /
+
+      - name: Restore ccache
+        uses: actions/cache@v4
+        with:
+          path: ~/.ccache
+          key: ccache-zn515xg-d-${{ github.run_id }}
+          restore-keys: ccache-zn515xg-d-
+
+      - name: Run build
+        env:
+          CORE_PROFILE: ${{ inputs.core_profile }}
+        run: |
+          chmod +x ./build.sh
+          ./build.sh
+
+      - name: Show result
+        if: always()
+        run: |
+          find out -maxdepth 2 -type f | head -50
+          echo '--- sizes ---'
+          find out -name '*.itb' -o -name '*.bin' | xargs -r ls -lh
+
+      - name: Upload firmware
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: zn515xg-d-ponwrt-${{ inputs.core_profile }}
+          path: out/*/
+          if-no-files-found: error
+
+      - name: Upload build log on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-failure-log
+          path: out/*/build*.log
+          if-no-files-found: warn

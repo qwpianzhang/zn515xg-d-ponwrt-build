@@ -1,0 +1,115 @@
+# ---------------------------------------------------------------------------
+# ZNXT ZN515XG-D 三网通用 PonWrt 配置片段（在 configs/an7581.config 之上追加）
+# 设备裁剪由 build.sh 的 sed 完成，此处只负责软件包选择。
+#
+# 设计原则：
+#   * 不写死任何运营商参数（VLAN / LOID / PON SN / PPPoE 账号 / 802.1p / MAC）
+#     这些字段在 PonWrt 原生 UCI 中本来就是空的，见
+#     openwrt-pon-userspace/airoha-ponctl/files/pon.config
+#     openwrt-pon-userspace/luci-app-iptv/root/etc/config/iptv
+#   * PassWall / OpenClash 编入固件但默认不启动（见 files/etc/uci-defaults）
+#   * 保留 Airoha 流卸载栈，不破坏硬件加速
+# ---------------------------------------------------------------------------
+
+# ---------- 1. PON：认证能力（UCI /etc/config/pon，出厂为空）----------
+CONFIG_PACKAGE_luci-app-pon=y
+CONFIG_PACKAGE_luci-i18n-pon-zh-cn=y
+
+# ---------- 2. IPTV：独立 VLAN + 802.1p + 端口绑定 + IGMP ----------
+# LuCI → 网络 → IPTV（UCI /etc/config/iptv，默认 enabled=0、VLAN 全空）
+CONFIG_PACKAGE_luci-app-iptv=y
+CONFIG_PACKAGE_luci-i18n-iptv-zh-cn=y
+# IGMP Proxy（IGMP Snooping 由内核 CONFIG_BRIDGE_IGMP_SNOOPING=y 提供，已核实）
+CONFIG_PACKAGE_igmpproxy=y
+CONFIG_PACKAGE_omcproxy=m
+
+# ---------- 3. 拨号 / IPv4 / IPv6 / NAT（PonWrt 默认已含，此处显式钉住）----------
+CONFIG_PACKAGE_ppp=y
+CONFIG_PACKAGE_ppp-mod-pppoe=y
+CONFIG_PACKAGE_kmod-pppoe=y
+CONFIG_PACKAGE_ppp-mod-pppox=y
+CONFIG_PACKAGE_odhcp6c=y
+CONFIG_PACKAGE_odhcpd-ipv6only=y
+CONFIG_PACKAGE_dnsmasq-full=y
+CONFIG_PACKAGE_firewall4=y
+CONFIG_PACKAGE_kmod-nft-nat=y
+CONFIG_PACKAGE_kmod-nft-nat6=y
+CONFIG_PACKAGE_ip-full=y
+# 注：ipv6helper 属第三方 feed 便利包，PonWrt 自带树中不存在（已核实），此处不声明；IPv6 由 odhcp6c + odhcpd-ipv6only 原生提供。
+
+# ---------- 4. VLAN 802.1Q / 802.1p ----------
+# 802.1Q 由内核 CONFIG_VLAN_8021Q=y 提供（target/linux/generic/config-6.18 已核实）
+# 802.1p 走 ip link ... type vlan egress-qos-map，内核内建
+CONFIG_PACKAGE_kmod-8021q=m
+CONFIG_PACKAGE_kmod-sched-core=y
+CONFIG_PACKAGE_kmod-sched-cake=y
+CONFIG_PACKAGE_kmod-tcp-bbr=y
+
+# ---------- 5. 保留 Airoha 硬件加速 / 流卸载栈（不要被代理插件破坏）----------
+CONFIG_PACKAGE_kmod-nf-flow=y
+CONFIG_PACKAGE_kmod-nft-offload=y
+CONFIG_PACKAGE_kmod-nf-conntrack-bridge=y
+CONFIG_PACKAGE_kmod-nft-bridge=y
+CONFIG_PACKAGE_kmod-nft-socket=y
+CONFIG_PACKAGE_mount-utils=y
+
+# ---------- 6. TProxy / TUN（PassWall 与 OpenClash 共用）----------
+CONFIG_PACKAGE_kmod-tun=y
+CONFIG_PACKAGE_kmod-nft-tproxy=y
+CONFIG_PACKAGE_kmod-inet-diag=y
+CONFIG_PACKAGE_kmod-ipt-nat=y
+
+# ---------- 7. LuCI + 中文界面 ----------
+CONFIG_PACKAGE_luci=y
+CONFIG_PACKAGE_luci-base=y
+CONFIG_PACKAGE_luci-light=y
+CONFIG_PACKAGE_luci-mod-network=y
+CONFIG_PACKAGE_luci-mod-status=y
+CONFIG_PACKAGE_luci-mod-system=y
+CONFIG_PACKAGE_luci-mod-admin-full=y
+CONFIG_PACKAGE_luci-app-firewall=y
+CONFIG_PACKAGE_luci-app-opkg=y
+CONFIG_PACKAGE_luci-i18n-base-zh-cn=y
+CONFIG_PACKAGE_luci-i18n-network-zh-cn=y
+CONFIG_PACKAGE_luci-i18n-status-zh-cn=y
+CONFIG_PACKAGE_luci-i18n-system-zh-cn=y
+CONFIG_PACKAGE_luci-i18n-firewall-zh-cn=y
+CONFIG_PACKAGE_luci-i18n-opkg-zh-cn=y
+
+# ---------- 8. SSH ----------
+CONFIG_PACKAGE_dropbear=y
+CONFIG_PACKAGE_openssh-sftp-server=m
+
+# ---------- 9. PassWall（LuCI 必编入；core 由 CORE_PROFILE 决定）----------
+CONFIG_PACKAGE_luci-app-passwall=y
+CONFIG_PACKAGE_luci-i18n-passwall-zh-cn=y
+# 常用轻量支撑组件
+CONFIG_PACKAGE_chinadns-ng=y
+CONFIG_PACKAGE_dns2socks=y
+CONFIG_PACKAGE_ipt2socks=y
+CONFIG_PACKAGE_microsocks=y
+CONFIG_PACKAGE_tcping=y
+CONFIG_PACKAGE_v2ray-geodata=y
+# 下面两个由 build.sh 的 CORE_PROFILE 追加/剔除，这里先给出 lean 默认值
+CONFIG_PACKAGE_xray-core=y
+
+# ---------- 10. OpenClash（LuCI 必编入，Mihomo core 运行期下载，不占 ROM）----------
+CONFIG_PACKAGE_luci-app-openclash=y
+CONFIG_PACKAGE_luci-i18n-openclash-zh-cn=y
+# 以 vernesong/OpenClash 当前 Makefile 实际 DEPENDS 为准：
+#   +dnsmasq-full +bash +curl +ca-bundle +ip-full +ruby +ruby-yaml +kmod-tun +unzip
+CONFIG_PACKAGE_bash=y
+CONFIG_PACKAGE_curl=y
+CONFIG_PACKAGE_ca-bundle=y
+CONFIG_PACKAGE_ruby=y
+CONFIG_PACKAGE_ruby-yaml=y
+CONFIG_PACKAGE_unzip=y
+# Makefile 中 config 块在 firewall4 下默认打开的项
+CONFIG_PACKAGE_luci-compat=y
+CONFIG_PACKAGE_dnsmasq_full_nftset=y
+
+# ---------- 11. 运维便利（可选，体积小）----------
+CONFIG_PACKAGE_ca-certificates=y
+CONFIG_PACKAGE_nand-utils=y
+CONFIG_PACKAGE_ubi-utils=y
+CONFIG_PACKAGE_htop=m

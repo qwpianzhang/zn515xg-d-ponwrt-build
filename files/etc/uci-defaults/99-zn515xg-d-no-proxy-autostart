@@ -1,0 +1,48 @@
+#!/bin/sh
+# ZNXT ZN515XG-D 三网通用固件 —— 首次启动默认值
+#
+# 目的：PassWall 与 OpenClash 都编进固件，但刷机后一律不自动启动。
+#       开机即可用：PON → WAN → PPPoE/IPoE → IPv4/IPv6 → Wi-Fi → IPTV，
+#       代理由用户自己在 LuCI 里启用，且不得同时启用两个。
+#
+# 说明：OpenClash 的 init 脚本是 START=99（默认 enable），
+#       其 /etc/config/openclash 中 openclash.config.enable 出厂为 0，
+#       但服务本身仍是 enabled，这里显式 disable 掉。
+# ---------------------------------------------------------------------------
+
+# 1) 关闭两个代理的开机自启
+for s in passwall passwall_server openclash; do
+    if [ -f "/etc/init.d/$s" ]; then
+        "/etc/init.d/$s" disable
+        "/etc/init.d/$s" stop 2>/dev/null
+    fi
+done
+
+# 2) OpenClash 主开关保持关闭
+if [ -f /etc/config/openclash ]; then
+    uci -q set openclash.config.enable='0'
+    uci -q set openclash.config.auto_update='0'
+    uci -q set openclash.config.enable_custom_dns='0'
+    uci -q commit openclash
+fi
+
+# 3) PassWall 关闭（配置文件由 passwall 自己的 uci-defaults 生成，
+#    这里做一次兜底；若运行时生成晚于本脚本则以 LuCI 显示为准）
+if [ -f /etc/config/passwall ]; then
+    uci -q set passwall.@global[0].enabled='0' 2>/dev/null
+    uci -q commit passwall 2>/dev/null
+fi
+
+# 4) 保留硬件加速/流卸载可用性（默认关闭，交给用户在防火墙页开启）
+#    —— 不做任何修改，仅确保 firewall4 默认区配置存在
+if [ -f /etc/config/firewall ]; then
+    uci -q get firewall.@defaults[0] >/dev/null || uci -q add firewall defaults >/dev/null
+    uci -q commit firewall
+fi
+
+# 5) 明确不写死任何运营商参数：
+#    /etc/config/pon  serial_number / registration_id / loid / loid_password 保持空
+#    /etc/config/iptv service_vlan / multicast_vlan / igmp_vlan / lan_port 保持空
+#    这两份配置由 airoha-ponctl 与 luci-app-iptv 出厂提供，已经是空值，此处不动它们。
+
+exit 0
