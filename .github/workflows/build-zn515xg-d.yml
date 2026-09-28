@@ -2,6 +2,16 @@ name: Build PonWrt for ZNXT ZN515XG-D
 
 on:
   workflow_dispatch:
+    inputs:
+      core_profile:
+        description: 'PassWall core 体积策略'
+        required: true
+        default: 'lean'
+        type: choice
+        options:
+          - none
+          - lean
+          - full
   push:
     branches:
       - main
@@ -12,44 +22,47 @@ jobs:
     timeout-minutes: 350
 
     env:
-      CORE_PROFILE: lean
+      CORE_PROFILE: ${{ github.event.inputs.core_profile || 'lean' }}
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Maximize build space
+      - name: Free disk space
         run: |
+          sudo swapoff -a || true
           sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
           sudo rm -rf /usr/lib/mono /usr/share/swift /usr/local/julia* /usr/lib/jvm /usr/local/graalvm
-          sudo rm -rf /home/linuxbrew /usr/share/az* /opt/az /usr/lib/postgresql
+          sudo rm -rf /home/linuxbrew /usr/share/az* /opt/az /usr/local/share/powershell /usr/lib/postgresql
+          sudo rm -rf /usr/local/share/chromium* /opt/microsoft
           sudo apt-get clean
           df -h /
+          nproc
 
       - name: Cache ccache
         uses: actions/cache@v4
         with:
           path: ~/.ccache
-          key: ccache-zn515xg-d
-          restore-keys: ccache-zn515xg-d
+          key: ccache-zn515xg-d-an7581
+          restore-keys: ccache-zn515xg-d-an7581
 
       - name: Cache source tarballs
         uses: actions/cache@v4
         with:
           path: work/ponwrt/dl
-          key: dl-ponwrt-an7581
-          restore-keys: dl-ponwrt-an7581
+          key: dl-ponwrt-an7581-v1
+          restore-keys: dl-ponwrt-an7581-v1
 
       - name: Run build
         run: |
           chmod +x ./build.sh
           ./build.sh
 
-      - name: Show result
+      - name: Show acceptance report
         if: always()
         run: |
-          find out -maxdepth 2 -type f | head -50
-          echo '--- image sizes ---'
+          cat out/*/验收报告.txt 2>/dev/null || echo "无验收报告"
+          echo '--- 镜像 ---'
           find out -name '*.itb' -o -name '*.bin' | xargs -r ls -lh
 
       - name: Upload firmware
@@ -60,10 +73,18 @@ jobs:
           path: out/*/
           if-no-files-found: error
 
-      - name: Upload failure log
+      - name: Upload failure summary
         if: failure()
         uses: actions/upload-artifact@v4
         with:
-          name: build-failure-log
-          path: out/*/build*.log
+          name: build-failure-summary
+          path: out/*/failure-summary.txt
+          if-no-files-found: warn
+
+      - name: Upload build log
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-log
+          path: out/*/build.log
           if-no-files-found: warn
