@@ -1,0 +1,5 @@
+artifacts/
+work/
+out/
+*.itb
+*.bin
