@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # =============================================================================
 # ZNXT ZN515XG-D (Airoha AN7581) 三网通用 PonWrt 一键构建脚本
+# 代理方案：PassWall2 + OpenClash（PassWall v1 已移除）
 #
 # 运行环境：Linux（Ubuntu 22.04/24.04 或 WSL2）。Windows 原生 Git-Bash 不支持。
 #
@@ -91,9 +92,10 @@ setup_feeds() {
   "$WORK/ponwrt/scripts/feeds" install -a 2>&1 | tail -10
 
   log "补装关键包（新 feed 可能未被 -a 覆盖）"
-  for p in luci-app-passwall luci-app-openclash luci-app-iptv luci-app-pon \
-           xray-core sing-box chinadns-ng dns2socks ipt2socks microsocks \
-           tcping v2ray-geodata igmpproxy omcproxy ruby-yaml luci-compat; do
+  for p in luci-app-passwall2 luci-app-openclash luci-app-iptv luci-app-pon \
+           xray-core sing-box chinadns-ng tcping \
+           v2ray-geoip v2ray-geosite geoview \
+           igmpproxy omcproxy ruby-yaml luci-compat lyaml; do
     "$WORK/ponwrt/scripts/feeds" install "$p" >/dev/null 2>&1 || true
   done
 }
@@ -119,19 +121,27 @@ EOF
   cat "$HERE/zn515xg-d.seed" >> .config
 
   # 3.3 core 体积策略
+  #
+  # 注意：PassWall2 的 Basic_Core 是一个 choice（Xray / SingBox / All），
+  # 没有「不选 core」的选项，所以 none 也仍会带 xray-core（体积约 15-20MB）。
+  # 想要完全不带 core，得把 luci-app-passwall2 一起去掉。
   case "$CORE_PROFILE" in
     none)
-      sed -i -E 's#^CONFIG_PACKAGE_xray-core=[ym]$#\# CONFIG_PACKAGE_xray-core is not set#' .config
+      # 仍然选 Xray（choice 无空选项），但不追加任何额外 core
+      sed -i -E 's#^CONFIG_PACKAGE_luci-app-passwall2_Basic_Core_All=[ym]$#\# CONFIG_PACKAGE_luci-app-passwall2_Basic_Core_All is not set#' .config
+      grep -q '^CONFIG_PACKAGE_luci-app-passwall2_Basic_Core_Xray=y' .config || \
+        echo 'CONFIG_PACKAGE_luci-app-passwall2_Basic_Core_Xray=y' >> .config
       ;;
     full)
       cat >> .config <<'EOF'
-CONFIG_PACKAGE_sing-box=y
-CONFIG_PACKAGE_hysteria=y
-CONFIG_PACKAGE_naiveproxy=y
-CONFIG_PACKAGE_shadowsocks-rust=y
-CONFIG_PACKAGE_simple-obfs=y
-CONFIG_PACKAGE_xray-plugin=y
-CONFIG_PACKAGE_v2ray-plugin=y
+# PassWall2：放开完整 core 与插件（体积显著增大）
+# CONFIG_PACKAGE_luci-app-passwall2_Basic_Core_Xray is not set
+CONFIG_PACKAGE_luci-app-passwall2_Basic_Core_All=y
+CONFIG_PACKAGE_luci-app-passwall2_INCLUDE_Haproxy=y
+CONFIG_PACKAGE_luci-app-passwall2_INCLUDE_Shadowsocks_Rust_Client=y
+CONFIG_PACKAGE_luci-app-passwall2_INCLUDE_ShadowsocksR_Libev_Client=y
+CONFIG_PACKAGE_luci-app-passwall2_INCLUDE_Simple_Obfs=y
+CONFIG_PACKAGE_luci-app-passwall2_INCLUDE_V2ray_Plugin=y
 EOF
       ;;
     lean|*) ;;
@@ -286,9 +296,12 @@ verify() {
   done
 
   echo "" >>"$R"; echo "[5] 代理插件（编入但默认不启动）" >>"$R"
-  chk "luci-app-passwall 已编入"    "grep -q '^CONFIG_PACKAGE_luci-app-passwall=[ym]' .config"
-  chk "luci-app-openclash 已编入"   "grep -q '^CONFIG_PACKAGE_luci-app-openclash=[ym]' .config"
-  chk "overlay 含关闭自启脚本"      "test -f files/etc/uci-defaults/99-zn515xg-d-no-proxy-autostart"
+  chk "luci-app-passwall2 已编入"     "grep -q '^CONFIG_PACKAGE_luci-app-passwall2=[ym]' .config"
+  chk "luci-app-openclash 已编入"     "grep -q '^CONFIG_PACKAGE_luci-app-openclash=[ym]' .config"
+  chk "PassWall v1 未被编入（已替换为 v2）" "! grep -q '^CONFIG_PACKAGE_luci-app-passwall=[ym]' .config"
+  chk "PassWall2 走 nftables 透明代理（fw4）" "grep -q '^CONFIG_PACKAGE_luci-app-passwall2_Nftables_Transparent_Proxy=y' .config"
+  chk "PassWall2 未拉入 sing-box（lean 策略）" "! grep -q '^CONFIG_PACKAGE_sing-box=[ym]' .config"
+  chk "overlay 含关闭自启脚本"        "test -f files/etc/uci-defaults/zz-zn515xg-d-no-proxy-autostart"
 
   echo "" >>"$R"; echo "[6] 运营商参数不得写死（应全为空/未设置）" >>"$R"
   for k in loid loid_password serial_number ploam_password; do

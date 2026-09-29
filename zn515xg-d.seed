@@ -80,17 +80,37 @@ CONFIG_PACKAGE_luci-i18n-opkg-zh-cn=y
 CONFIG_PACKAGE_dropbear=y
 CONFIG_PACKAGE_openssh-sftp-server=m
 
-# ---------- 9. PassWall（LuCI 必编入；core 由 CORE_PROFILE 决定）----------
-CONFIG_PACKAGE_luci-app-passwall=y
-CONFIG_PACKAGE_luci-i18n-passwall-zh-cn=y
-# 常用轻量支撑组件
+# ---------- 9. PassWall2（LuCI 必编入；core 由 CORE_PROFILE 决定）----------
+# PassWall v1 已整体移除，改用 openwrt-passwall2（包名 luci-app-passwall2）
+CONFIG_PACKAGE_luci-app-passwall2=y
+CONFIG_PACKAGE_luci-i18n-passwall2-zh-cn=y
+
+# 【重要】PassWall2 的 Makefile 在 aarch64（AN7581 就是 aarch64）下，
+# 以下几项 default y：Basic_Core_All / INCLUDE_Haproxy /
+# INCLUDE_Shadowsocks_Rust_Client / INCLUDE_ShadowsocksR_Libev_Client /
+# INCLUDE_Simple_Obfs / INCLUDE_V2ray_Plugin。
+# 默认照单全收会把 sing-box + haproxy + shadowsocks-rust 全拉进来，
+# ROM 体积和编译时间都会失控，因此 lean 策略下显式关掉。
+# CONFIG_PACKAGE_luci-app-passwall2_Basic_Core_All is not set
+CONFIG_PACKAGE_luci-app-passwall2_Basic_Core_Xray=y
+# CONFIG_PACKAGE_luci-app-passwall2_INCLUDE_Haproxy is not set
+# CONFIG_PACKAGE_luci-app-passwall2_INCLUDE_Shadowsocks_Rust_Client is not set
+# CONFIG_PACKAGE_luci-app-passwall2_INCLUDE_Shadowsocks_Rust_Server is not set
+# CONFIG_PACKAGE_luci-app-passwall2_INCLUDE_ShadowsocksR_Libev_Client is not set
+# CONFIG_PACKAGE_luci-app-passwall2_INCLUDE_ShadowsocksR_Libev_Server is not set
+# CONFIG_PACKAGE_luci-app-passwall2_INCLUDE_Simple_Obfs is not set
+# CONFIG_PACKAGE_luci-app-passwall2_INCLUDE_V2ray_Plugin is not set
+
+# 透明代理后端：本固件用 firewall4，走 nftables（Makefile 里 default y if PACKAGE_firewall4）
+CONFIG_PACKAGE_luci-app-passwall2_Nftables_Transparent_Proxy=y
+# CONFIG_PACKAGE_luci-app-passwall2_Iptables_Transparent_Proxy is not set
+
+# LUCI_DEPENDS 中的必要项（其余如 lyaml / lua / luci-lib-jsonc / resolveip /
+# coreutils* / geoview / v2ray-geoip / v2ray-geosite 由 defconfig 自动选中）
 CONFIG_PACKAGE_chinadns-ng=y
-CONFIG_PACKAGE_dns2socks=y
-CONFIG_PACKAGE_ipt2socks=y
-CONFIG_PACKAGE_microsocks=y
 CONFIG_PACKAGE_tcping=y
-CONFIG_PACKAGE_v2ray-geodata=y
-# 下面两个由 build.sh 的 CORE_PROFILE 追加/剔除，这里先给出 lean 默认值
+CONFIG_PACKAGE_unzip=y
+CONFIG_PACKAGE_curl=y
 CONFIG_PACKAGE_xray-core=y
 
 # ---------- 10. OpenClash（LuCI 必编入，Mihomo core 运行期下载，不占 ROM）----------

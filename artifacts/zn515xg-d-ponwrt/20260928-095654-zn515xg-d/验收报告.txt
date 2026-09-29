@@ -1,0 +1,57 @@
+==============================================================
+ ZNXT ZN515XG-D / AN7581 PonWrt 固件验收报告
+ 生成时间: 2026-09-28 12:31:52 UTC
+ core_profile: lean
+==============================================================
+
+[1] 镜像文件
+  ponwrt-airoha-an7581-znxt_zn515xg-d-initramfs-recovery.itb   52690944 bytes
+  ponwrt-airoha-an7581-znxt_zn515xg-d-squashfs-sysupgrade.itb   61407490 bytes
+
+[2] SHA256
+
+[3] target / profile 核对
+  [PASS] CONFIG_TARGET_BOARD=airoha
+  [PASS] CONFIG_TARGET_SUBTARGET=an7581
+  [PASS] 只选中 1 个设备 profile
+  [PASS] 选中设备为 znxt_zn515xg-d
+  [PASS] 镜像文件名含 zn515xg-d
+
+[4] 必需能力包核对（CONFIG_PACKAGE_*=y）
+  [PASS] 包含 luci-app-pon
+  [PASS] 包含 airoha-ponctl
+  [PASS] 包含 ppp
+  [PASS] 包含 ppp-mod-pppoe
+  [PASS] 包含 kmod-pppoe
+  [PASS] 包含 odhcp6c
+  [PASS] 包含 odhcpd-ipv6only
+  [PASS] 包含 dnsmasq-full
+  [PASS] 包含 firewall4
+  [PASS] 包含 kmod-nft-nat
+  [PASS] 包含 kmod-tun
+  [PASS] 包含 kmod-nft-tproxy
+  [PASS] 包含 luci-app-iptv
+  [PASS] 包含 igmpproxy
+  [PASS] 包含 luci
+  [PASS] 包含 luci-i18n-base-zh-cn
+  [PASS] 包含 dropbear
+  [FAIL] 包含 kmod-8021q
+  [PASS] 包含 ip-full
+
+[5] 代理插件（编入但默认不启动）
+  [PASS] luci-app-passwall 已编入
+  [PASS] luci-app-openclash 已编入
+  [PASS] overlay 含关闭自启脚本
+
+[6] 运营商参数不得写死（应全为空/未设置）
+  pon.config loid             -> 	option loid ''
+	option loid ''
+  pon.config loid_password    -> 	option loid_password ''
+	option loid_password ''
+  pon.config serial_number    -> 	option serial_number ''
+  pon.config ploam_password   -> <未找到>
+
+==============================================================
+ 汇总：PASS=26  FAIL=1
+ 注意：编译成功 != 实机验证成功。未上机验证项见 刷机说明.md 第 9 节。
+==============================================================
