@@ -1,0 +1,27 @@
+#!/bin/sh
+# ZNXT ZN515XG-D / FiberHome HG5585F 三网通用固件 —— 每次开机执行
+#
+# 【修复什么】PassWall2 报「没有执行权限，无法启动：/tmp/etc/passwall2/bin/xray」
+#
+# 根因（已定位到上游源码行）：
+#   utils.sh 的 ln_run() 对含 "/" 的核心路径会先
+#       ln -s /usr/bin/xray /tmp/etc/passwall2/bin/xray
+#   再 [ -x ] 检查，失败就报那句。# 而这个 bin 目录，整个 PassWall2 里只有
+#   app.sh 的 start()（第 900 行）用 mkdir -p 创建过。
+#
+#   URL 延迟测试走的是 test.sh → app.sh run_socks（第 1073 行直接调用），
+#   不经过 start()，没有任何 mkdir。同时 app.sh 的 stop()（第 998 行）会
+#       rm -rf /tmp/etc/passwall2
+#   并打印 "Clearing and closing related programs and cache complete."
+#
+#   于是「更新订阅 → stop 删掉整个 tmp 目录 → 立刻自动测速 → run_socks」这条链
+#   必然踩雷：ln -s 静默失败 → -x 判假 → 报没有执行权限。
+#   并且这本固件默认把 passwall2 禁用了，start() 从未跑过，目录压根不存在。
+#
+# 【为什么必须放在这里】/tmp 是 tmpfs，重启即失效，所以每次开机都要重建。
+# ---------------------------------------------------------------------------
+
+mkdir -p /tmp/etc/passwall2/bin 2>/dev/null
+chmod 0755 /tmp/etc/passwall2/bin 2>/dev/null
+
+exit 0

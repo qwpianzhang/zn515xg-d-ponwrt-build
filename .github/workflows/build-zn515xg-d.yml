@@ -1,12 +1,21 @@
-name: Build PonWrt for ZNXT ZN515XG-D
+name: Build PonWrt (Airoha AN7581)
 
 on:
   workflow_dispatch:
     inputs:
-      core_profile:
-        description: 'PassWall core 体积策略'
+      target_device:
+        description: '机型（必须是 an7581.mk 里 TARGET_DEVICES 之一）'
         required: true
-        default: 'lean'
+        default: 'znxt_zn515xg-d'
+        type: choice
+        options:
+          - znxt_zn515xg-d
+          - fiberhome_hg5585f-ct
+          - fiberhome_hg5585f-cu
+      core_profile:
+        description: 'PassWall2 core 策略'
+        required: true
+        default: 'full'
         type: choice
         options:
           - none
@@ -19,10 +28,13 @@ on:
 jobs:
   build:
     runs-on: ubuntu-22.04
-    timeout-minutes: 350
+    # GitHub 单 job 上限 360 分钟；full 策略要编 xray + sing-box + mihomo 三个
+    # Go 核心（含 golang bootstrap），比 lean 慢得多，留足余量。
+    timeout-minutes: 355
 
     env:
-      CORE_PROFILE: ${{ github.event.inputs.core_profile || 'lean' }}
+      TARGET_DEVICE: ${{ github.event.inputs.target_device || 'znxt_zn515xg-d' }}
+      CORE_PROFILE: ${{ github.event.inputs.core_profile || 'full' }}
 
     steps:
       - name: Checkout
@@ -69,7 +81,7 @@ jobs:
         if: success()
         uses: actions/upload-artifact@v4
         with:
-          name: zn515xg-d-ponwrt
+          name: ponwrt-${{ env.TARGET_DEVICE }}
           path: out/*/
           if-no-files-found: error
 

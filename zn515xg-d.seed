@@ -85,21 +85,29 @@ CONFIG_PACKAGE_openssh-sftp-server=m
 CONFIG_PACKAGE_luci-app-passwall2=y
 CONFIG_PACKAGE_luci-i18n-passwall2-zh-cn=y
 
-# 【重要】PassWall2 的 Makefile 在 aarch64（AN7581 就是 aarch64）下，
-# 以下几项 default y：Basic_Core_All / INCLUDE_Haproxy /
-# INCLUDE_Shadowsocks_Rust_Client / INCLUDE_ShadowsocksR_Libev_Client /
-# INCLUDE_Simple_Obfs / INCLUDE_V2ray_Plugin。
-# 默认照单全收会把 sing-box + haproxy + shadowsocks-rust 全拉进来，
-# ROM 体积和编译时间都会失控，因此 lean 策略下显式关掉。
-# CONFIG_PACKAGE_luci-app-passwall2_Basic_Core_All is not set
-CONFIG_PACKAGE_luci-app-passwall2_Basic_Core_Xray=y
-# CONFIG_PACKAGE_luci-app-passwall2_INCLUDE_Haproxy is not set
+# 【重要】Basic_Core 是一个 choice（Xray / SingBox / All），且在 aarch64 下
+# Basic_Core_All 就是 default。本版显式选 All = xray-core + sing-box 双核心：
+#   * xray-core → VLESS / VMess / Trojan / Shadowsocks / WireGuard / HTTP / SOCKS
+#   * sing-box  → 上述全部，外加 Hysteria2 / Tuic / AnyTLS / Naive / ShadowTLS /
+#                 ShadowSocksR（util_sing-box.lua:426 有 shadowsocksr outbound）
+# 【为什么必须带 sing-box】PassWall2 的 allowInsecure 只落在 util_sing-box.lua:251，
+#   util_xray.lua 里 grep -ci insecure == 0 —— Xray 类型节点根本没有「忽略证书」开关。
+# CONFIG_PACKAGE_luci-app-passwall2_Basic_Core_Xray is not set
+# CONFIG_PACKAGE_luci-app-passwall2_Basic_Core_SingBox is not set
+CONFIG_PACKAGE_luci-app-passwall2_Basic_Core_All=y
+CONFIG_PACKAGE_xray-core=y
+CONFIG_PACKAGE_sing-box=y
+
+# 以下 INCLUDE_* 在 aarch64 下同样 default y，逐个显式表态，不交给默认值：
+CONFIG_PACKAGE_luci-app-passwall2_INCLUDE_Haproxy=y
+CONFIG_PACKAGE_luci-app-passwall2_INCLUDE_ShadowsocksR_Libev_Client=y
+CONFIG_PACKAGE_luci-app-passwall2_INCLUDE_Simple_Obfs=y
+CONFIG_PACKAGE_luci-app-passwall2_INCLUDE_V2ray_Plugin=y
+# Shadowsocks Rust：SS 能力已由 xray-core 与 sing-box 覆盖，而它在 CI 上要多跑
+# 半小时以上的 Rust 编译链条，收益不成比例，故不编入。需要时把下面改成 =y 即可。
 # CONFIG_PACKAGE_luci-app-passwall2_INCLUDE_Shadowsocks_Rust_Client is not set
 # CONFIG_PACKAGE_luci-app-passwall2_INCLUDE_Shadowsocks_Rust_Server is not set
-# CONFIG_PACKAGE_luci-app-passwall2_INCLUDE_ShadowsocksR_Libev_Client is not set
 # CONFIG_PACKAGE_luci-app-passwall2_INCLUDE_ShadowsocksR_Libev_Server is not set
-# CONFIG_PACKAGE_luci-app-passwall2_INCLUDE_Simple_Obfs is not set
-# CONFIG_PACKAGE_luci-app-passwall2_INCLUDE_V2ray_Plugin is not set
 
 # 透明代理后端：本固件用 firewall4，走 nftables（Makefile 里 default y if PACKAGE_firewall4）
 CONFIG_PACKAGE_luci-app-passwall2_Nftables_Transparent_Proxy=y
@@ -133,3 +141,23 @@ CONFIG_PACKAGE_ca-certificates=y
 CONFIG_PACKAGE_nand-utils=y
 CONFIG_PACKAGE_ubi-utils=y
 CONFIG_PACKAGE_htop=m
+
+# ---------- 12. Nikki（Mihomo 透明代理，与 PassWall2 / OpenClash 三选一）----------
+# 协议覆盖由 Mihomo 核心决定，实测 Consumer 侧这几种都在：
+#   VLESS / VMess / Trojan / Shadowsocks / Hysteria / Hysteria2 / Tuic / WireGuard /
+#   AnyTLS / ShadowTLS / HTTP / SOCKS
+# 注：SSR 仍在 PassWall2 的 sing-box 分支那边（Mihomo 没有 SSR outbound），
+#     所以「SSR + VLESS + Hysteria2 全都要」的场景是靠两个插件互补完成的。
+CONFIG_PACKAGE_luci-app-nikki=y
+CONFIG_PACKAGE_luci-i18n-nikki-zh-cn=y
+CONFIG_PACKAGE_nikki=y
+# 核心：mihomo-meta 是 PROVIDES:=mihomo 的默认变体，与 mihomo-alpha 互相 CONFLICTS
+CONFIG_PACKAGE_mihomo-meta=y
+# CONFIG_PACKAGE_mihomo-alpha is not set
+# Package/nikki 的 DEPENDS（已逐项核实）：
+#   +ca-bundle +curl +yq firewall4 +ip-full +kmod-inet-diag +kmod-nft-socket \
+#   +kmod-nft-tproxy +kmod-tun +kmod-dummy +mihomo
+# 其中 ca-bundle / curl / ip-full / kmod-inet-diag / kmod-nft-socket /
+# kmod-nft-tproxy / kmod-tun / firewall4 已在前面各节显式声明，此处补齐两个：
+CONFIG_PACKAGE_yq=y
+CONFIG_PACKAGE_kmod-dummy=y

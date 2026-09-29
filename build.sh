@@ -5,9 +5,16 @@
 #
 # 运行环境：Linux（Ubuntu 22.04/24.04 或 WSL2）。Windows 原生 Git-Bash 不支持。
 #
-#   ./build.sh                       # lean ：PassWall 只带 xray-core（默认）
-#   CORE_PROFILE=full ./build.sh     # full ：追加 sing-box / hysteria 等
-#   CORE_PROFILE=none ./build.sh     # none ：只编 LuCI，core 后续 opkg 装
+#   ./build.sh                       # full ：PassWall2 双核心 xray + sing-box（默认）
+#   CORE_PROFILE=lean ./build.sh     # lean ：只带 xray-core（注意：此时 Xray 类型节点
+#                                   #         没有 allowInsecure 开关）
+#   CORE_PROFILE=none ./build.sh     # none ：仍带 xray-core（choice 无空选项）
+#
+# 机型：同一个 SoC（Airoha AN7581），target/linux/airoha/image/an7581.mk 里
+#       TARGET_DEVICES 列出的机型都可用 TARGET_DEVICE 切换：
+#   TARGET_DEVICE=znxt_zn515xg-d        ./build.sh     # ZNXT ZN515XG-D（默认）
+#   TARGET_DEVICE=fiberhome_hg5585f-ct  ./build.sh     # 烽火 HG5585F 电信版
+#   TARGET_DEVICE=fiberhome_hg5585f-cu  ./build.sh     # 烽火 HG5585F 联通版
 #
 # 产物：out/<时间戳>-zn515xg-d/
 #         *-sysupgrade.itb             sysupgrade 镜像（本机型是 .itb 不是 .bin）
@@ -23,15 +30,17 @@ set -euo pipefail
 
 PONWRT_REPO="${PONWRT_REPO:-https://github.com/pbs05/ponwrt.git}"
 PONWRT_BRANCH="${PONWRT_BRANCH:-master}"
-DEVICE="znxt_zn515xg-d"
+# TARGET_DEVICE 必须是 target/linux/airoha/image/an7581.mk 里 TARGET_DEVICES 之一
+TARGET_DEVICE="${TARGET_DEVICE:-znxt_zn515xg-d}"
+DEVICE="$TARGET_DEVICE"
 DEVICE_DTS="znxt,zn515xg-d"
-CORE_PROFILE="${CORE_PROFILE:-lean}"
+CORE_PROFILE="${CORE_PROFILE:-full}"
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
 WORK="${WORK:-$HERE/work}"
 OUT="${OUT:-$HERE/out}"
 STAMP="$(date +%Y%m%d-%H%M%S)"
-DEST="$OUT/${STAMP}-zn515xg-d"
+DEST="$OUT/${STAMP}-${TARGET_DEVICE}"
 
 log() { printf '\n\033[1;36m==> %s\033[0m\n' "$*"; }
 mkdir -p "$DEST"
@@ -133,15 +142,17 @@ EOF
         echo 'CONFIG_PACKAGE_luci-app-passwall2_Basic_Core_Xray=y' >> .config
       ;;
     full)
+      # xray-core + sing-box 双核心，外加 SS/SSR 插件；Seed 已显式声明，此处
+      # 只做「确认」——避免 aarch64 default y 陷阱把 ss-rust 这类重活悄悄拉进来。
       cat >> .config <<'EOF'
-# PassWall2：放开完整 core 与插件（体积显著增大）
-# CONFIG_PACKAGE_luci-app-passwall2_Basic_Core_Xray is not set
+# PassWall2 双核心（xray-core + sing-box），详见 zn515xg-d.seed 第 9 节
 CONFIG_PACKAGE_luci-app-passwall2_Basic_Core_All=y
-CONFIG_PACKAGE_luci-app-passwall2_INCLUDE_Haproxy=y
-CONFIG_PACKAGE_luci-app-passwall2_INCLUDE_Shadowsocks_Rust_Client=y
-CONFIG_PACKAGE_luci-app-passwall2_INCLUDE_ShadowsocksR_Libev_Client=y
-CONFIG_PACKAGE_luci-app-passwall2_INCLUDE_Simple_Obfs=y
-CONFIG_PACKAGE_luci-app-passwall2_INCLUDE_V2ray_Plugin=y
+# CONFIG_PACKAGE_luci-app-passwall2_Basic_Core_Xray is not set
+# CONFIG_PACKAGE_luci-app-passwall2_Basic_Core_SingBox is not set
+# 不编 shadowsocks-rust：SS 已被 xray-core / sing-box 覆盖，且它在 CI 上要多跑
+# 半小时以上 Rust 编译链条，收益不成比例。
+# CONFIG_PACKAGE_luci-app-passwall2_INCLUDE_Shadowsocks_Rust_Client is not set
+# CONFIG_PACKAGE_luci-app-passwall2_INCLUDE_Shadowsocks_Rust_Server is not set
 EOF
       ;;
     lean|*) ;;
@@ -260,9 +271,10 @@ verify() {
 
   {
     echo "=============================================================="
-    echo " ZNXT ZN515XG-D / AN7581 PonWrt 固件验收报告"
+    echo " AN7581 PonWrt 固件验收报告"
     echo " 生成时间: $(date -u '+%Y-%m-%d %H:%M:%S UTC')"
-    echo " core_profile: $CORE_PROFILE"
+    echo " target_device: $DEVICE"
+    echo " core_profile:  $CORE_PROFILE"
     echo "=============================================================="
     echo ""
     echo "[1] 镜像文件"
@@ -284,24 +296,43 @@ verify() {
   chk "CONFIG_TARGET_BOARD=airoha"        "grep -q '^CONFIG_TARGET_BOARD=\"airoha\"' .config"
   chk "CONFIG_TARGET_SUBTARGET=an7581"    "grep -q '^CONFIG_TARGET_SUBTARGET=\"an7581\"' .config"
   chk "只选中 1 个设备 profile"            "[ \"\$(grep -c '^CONFIG_TARGET_DEVICE_airoha_an7581_DEVICE_.*=y' .config)\" = 1 ]"
-  chk "选中设备为 znxt_zn515xg-d"          "grep -q '^CONFIG_TARGET_DEVICE_airoha_an7581_DEVICE_znxt_zn515xg-d=y' .config"
-  chk "镜像文件名含 zn515xg-d"             "ls $DEST/*zn515xg-d*.itb"
+  chk "选中设备为 ${DEVICE}"          "grep -q '^CONFIG_TARGET_DEVICE_airoha_an7581_DEVICE_${DEVICE}=y' .config"
+  chk "镜像文件名含 ${DEVICE}"         "ls $DEST/*${DEVICE}*.itb"
 
   echo "" >>"$R"; echo "[4] 必需能力包核对（CONFIG_PACKAGE_*=y）" >>"$R"
   for p in luci-app-pon airoha-ponctl ppp ppp-mod-pppoe kmod-pppoe \
            odhcp6c odhcpd-ipv6only dnsmasq-full firewall4 kmod-nft-nat \
            kmod-tun kmod-nft-tproxy luci-app-iptv igmpproxy luci \
-           luci-i18n-base-zh-cn dropbear kmod-8021q ip-full; do
+           luci-i18n-base-zh-cn dropbear ip-full; do
     chk "包含 $p" "grep -q '^CONFIG_PACKAGE_${p}=[ym]' .config"
   done
+  # 802.1Q 与 IGMP Snooping 是内核内建（target/linux/generic/config-* 的
+  # CONFIG_VLAN_8021Q=y / CONFIG_BRIDGE_IGMP_SNOOPING=y），
+  # OpenWrt 中已不存在 kmod-8021q 包，因此改判内核配置而非包。
+  chk "802.1Q VLAN 内核内建"         "grep -rq '^CONFIG_VLAN_8021Q=[ym]' target/linux/generic/"
+  chk "IGMP Snooping 内核内建"       "grep -rq '^CONFIG_BRIDGE_IGMP_SNOOPING=[ym]' target/linux/generic/"
 
-  echo "" >>"$R"; echo "[5] 代理插件（编入但默认不启动）" >>"$R"
+  echo "" >>"$R"; echo "[5] 代理插件（三个都编入，但默认都不启动）" >>"$R"
   chk "luci-app-passwall2 已编入"     "grep -q '^CONFIG_PACKAGE_luci-app-passwall2=[ym]' .config"
   chk "luci-app-openclash 已编入"     "grep -q '^CONFIG_PACKAGE_luci-app-openclash=[ym]' .config"
+  chk "luci-app-nikki 已编入"         "grep -q '^CONFIG_PACKAGE_luci-app-nikki=[ym]' .config"
+  chk "nikki 主程序已编入"             "grep -q '^CONFIG_PACKAGE_nikki=[ym]' .config"
+  chk "mihomo-meta 核心已编入"         "grep -q '^CONFIG_PACKAGE_mihomo-meta=[ym]' .config"
+  chk "mihomo-alpha 未被选中（与 meta 冲突）" "! grep -q '^CONFIG_PACKAGE_mihomo-alpha=[ym]' .config"
   chk "PassWall v1 未被编入（已替换为 v2）" "! grep -q '^CONFIG_PACKAGE_luci-app-passwall=[ym]' .config"
   chk "PassWall2 走 nftables 透明代理（fw4）" "grep -q '^CONFIG_PACKAGE_luci-app-passwall2_Nftables_Transparent_Proxy=y' .config"
-  chk "PassWall2 未拉入 sing-box（lean 策略）" "! grep -q '^CONFIG_PACKAGE_sing-box=[ym]' .config"
+  chk "xray-core 已编入"               "grep -q '^CONFIG_PACKAGE_xray-core=[ym]' .config"
+  chk "sing-box 已编入（Hysteria2 与 allowInsecure 依赖它）" "grep -q '^CONFIG_PACKAGE_sing-box=[ym]' .config"
+  chk "PassWall2 双核心（Basic_Core_All）" "grep -q '^CONFIG_PACKAGE_luci-app-passwall2_Basic_Core_All=y' .config"
+  chk "shadowsocks-rust 未被编入（省 CI 时间）" "! grep -q '^CONFIG_PACKAGE_shadowsocks-rust-sslocal=[ym]' .config"
+  chk "nikki 依赖 yq 已编入"          "grep -q '^CONFIG_PACKAGE_yq=[ym]' .config"
+  chk "nikki 依赖 kmod-dummy 已编入"  "grep -q '^CONFIG_PACKAGE_kmod-dummy=[ym]' .config"
+
+  echo "" >>"$R"; echo "[5b] 已知缺陷的修复是否在位" >>"$R"
   chk "overlay 含关闭自启脚本"        "test -f files/etc/uci-defaults/zz-zn515xg-d-no-proxy-autostart"
+  chk "overlay 含 rc.local（每次开机重建 tmp bin 目录）" "test -f files/etc/rc.local"
+  chk "关闭脚本已扩展为关闭 nikki"    "grep -q 'nikki' files/etc/uci-defaults/zz-zn515xg-d-no-proxy-autostart"
+  chk "关闭脚本含 ln_run 双保险（核心转软链）" "grep -q 'ln -s' files/etc/uci-defaults/zz-zn515xg-d-no-proxy-autostart"
 
   echo "" >>"$R"; echo "[6] 运营商参数不得写死（应全为空/未设置）" >>"$R"
   for k in loid loid_password serial_number ploam_password; do

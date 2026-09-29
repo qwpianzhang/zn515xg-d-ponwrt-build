@@ -11,14 +11,14 @@
 #   /etc/config/passwall2 是由它在运行时从 /usr/share/passwall2/0_default_config 拷贝生成的。
 #   用 99- 开头会排在它前面、那时配置文件还不存在；zz- 保证本脚本最后执行。
 #
-# 服务自启状态：
+# 服务自启状态（三者都必须显式 disable）：
 #   PassWall2  init.d = passwall2 / passwall2_server（START=99，装完默认 enabled）
 #   OpenClash  init.d = openclash（START=99，装完默认 enabled）
-#   两者都必须显式 disable。
+#   Nikki      init.d = nikki（出厂 nikki.conf 里 option enabled '0'，但仍要 disable）
 # ---------------------------------------------------------------------------
 
-# 1) 关闭两个代理的开机自启
-for s in passwall2 passwall2_server openclash; do
+# 1) 关闭三个代理的开机自启
+for s in passwall2 passwall2_server openclash nikki; do
     if [ -f "/etc/init.d/$s" ]; then
         "/etc/init.d/$s" disable
         "/etc/init.d/$s" stop 2>/dev/null
@@ -41,13 +41,38 @@ if [ -f /etc/config/passwall2 ]; then
     uci -q commit passwall2 2>/dev/null
 fi
 
-# 4) 防火墙默认区配置存在性兜底（流卸载/硬件加速由用户在防火墙页自行开启）
+# 4) Nikki 主开关保持关闭（/etc/config/nikki 出厂已是 '0'，这里兜底）
+if [ -f /etc/config/nikki ]; then
+    uci -q set nikki.config.enabled='0'
+    uci -q set nikki.config.init='0'
+    uci -q commit nikki 2>/dev/null
+fi
+
+# 5) 绕开 PassWall2 的 ln_run 软链机制的【双保险】
+#    ln_run() 的判断是 [ ! -L "$file_func" ] —— 只有当源文件「不是软链」时
+#    才会去 ln -s 到 /tmp/etc/passwall2/bin。
+#    所以把 /usr/bin/xray 自己变成软链，ln_run 就会跳过软链步骤、直接用原路径
+#    执行，从根上不再依赖 /tmp 下的那个目录是否存在。
+#    （每次开机重建目录的补丁在 /etc/rc.local，两者互为冗余。）
+for b in xray sing-box haproxy chinadns-ng tcping mihomo; do
+    p="/usr/bin/$b"
+    if [ -e "$p" ] && [ ! -L "$p" ]; then
+        mv "$p" "${p}.real" 2>/dev/null && ln -s "${p}.real" "$p" 2>/dev/null
+    fi
+done
+# 确保 rc.local 可执行并立刻执行一次（不必等到下次开机）
+if [ -f /etc/rc.local ]; then
+    chmod +x /etc/rc.local 2>/dev/null
+    /etc/rc.local 2>/dev/null
+fi
+
+# 6) 防火墙默认区配置存在性兜底（流卸载/硬件加速由用户在防火墙页自行开启）
 if [ -f /etc/config/firewall ]; then
     uci -q get firewall.@defaults[0] >/dev/null || uci -q add firewall defaults >/dev/null
     uci -q commit firewall
 fi
 
-# 5) 明确不写死任何运营商参数：
+# 7) 明确不写死任何运营商参数：
 #    /etc/config/pon   serial_number / registration_id / loid / loid_password 保持空
 #    /etc/config/iptv  service_vlan / multicast_vlan / igmp_vlan / lan_port 保持空
 #    这两份配置由 airoha-ponctl 与 luci-app-iptv 出厂提供，已经是空值，此处不动它们。
