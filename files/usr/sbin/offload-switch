@@ -1,0 +1,112 @@
+#!/bin/sh
+# ---------------------------------------------------------------------------
+# offload-switch —— 流量卸载（flow offload）与代理插件的协调开关
+# ZNXT ZN515XG-D / Airoha AN7581 通用
+#
+# 【为什么需要这个东西】
+#   1. 硬件层面：MT7916D 的无线流量**不可能**走 NPU。
+#      mt76 里只有 mt7996 分支接了 NPU（Makefile 的 CONFIG_MT7996_NPU），
+#      mt7915 驱动目录里 grep -i npu 一行都没有；而且 mt7915 从不设置
+#      dev->hwrro_mode，停留在 MT76_HWRRO_OFF —— 而 NPU 卸载要求硬件做
+#      收包重排（HW-RRO），MT7915/7916 没这个能力。所以无线侧唯一的加速
+#      手段就是 **软件 flow offload**（nf_flow_table 快速路径）。
+#   2. 软件 flow offload 的本质是让已建立的流**绕过 netfilter**，
+#      而 PassWall2 / Nikki / OpenClash 全靠 nftables 规则工作。
+#      三者经核实都**不会**自己去关 offload（PassWall2 全包 grep -i offload 为空）。
+#   3. PonWrt 出厂 /etc/config/firewall 默认就是
+#         option flow_offloading   1
+#         option flow_offloading_hw  1
+#      （见 package/network/config/firewall4/patches/
+#        001-firewall4-add-support-for-fullcone-nat.patch）
+#      → 也就是说开箱即用的状态下，代理有可能被旁路。
+#
+# 【本脚本的策略】
+#   代理开着 → 关 offload（保证代理行为完全可预测）
+#   代理全关 → 开 offload（拿到无线/有线的最高转发性能）
+#   这个切换由 /etc/init.d/offload-guard 在开机和代理开关变化时自动执行，
+#   你也可以手工调用。
+# ---------------------------------------------------------------------------
+
+FW=/etc/config/firewall
+
+log() { logger -t offload-switch "$@" 2>/dev/null; echo "$@"; }
+
+# 是否任一代理处于启用状态
+proxy_enabled() {
+    [ "$(uci -q get passwall2.@global[0].enabled 2>/dev/null)" = "1" ] && return 0
+    [ "$(uci -q get nikki.config.enabled 2>/dev/null)" = "1" ] && return 0
+    [ "$(uci -q get openclash.config.enable 2>/dev/null)" = "1" ] && return 0
+    return 1
+}
+
+proxy_names() {
+    local n=""
+    [ "$(uci -q get passwall2.@global[0].enabled 2>/dev/null)" = "1" ] && n="$n PassWall2"
+    [ "$(uci -q get nikki.config.enabled 2>/dev/null)" = "1" ] && n="$n Nikki"
+    [ "$(uci -q get openclash.config.enable 2>/dev/null)" = "1" ] && n="$n OpenClash"
+    [ -n "$n" ] && echo "$n" || echo "（无）"
+}
+
+_ensure_defaults() {
+    uci -q get firewall.@defaults[0] >/dev/null 2>&1 || uci -q add firewall defaults >/dev/null 2>&1
+}
+
+# 只在状态确实变化时才写配置并重载防火墙，避免无谓的规则抖动
+_apply() {
+    local want="$1" cur cur_hw
+    _ensure_defaults
+    cur="$(uci -q get firewall.@defaults[0].flow_offloading 2>/dev/null)"
+    cur_hw="$(uci -q get firewall.@defaults[0].flow_offloading_hw 2>/dev/null)"
+    [ "${cur:-0}" = "$want" ] && [ "${cur_hw:-0}" = "$want" ] && return 0
+
+    uci -q set firewall.@defaults[0].flow_offloading="$want"
+    uci -q set firewall.@defaults[0].flow_offloading_hw="$want"
+    uci -q commit firewall
+    /etc/init.d/firewall reload >/dev/null 2>&1
+    log "flow offload -> $want"
+}
+
+do_status() {
+    _ensure_defaults
+    echo "代理状态    : $(proxy_names)"
+    echo "flow_offloading    : $(uci -q get firewall.@defaults[0].flow_offloading 2>/dev/null)"
+    echo "flow_offloading_hw : $(uci -q get firewall.@defaults[0].flow_offloading_hw 2>/dev/null)"
+    echo "packet_steering    : $(uci -q get network.@globals[0].packet_steering 2>/dev/null)"
+    echo "irqbalance         : $(uci -q get irqbalance.irqbalance.enabled 2>/dev/null)"
+    # 卸载是否真的在工作，看 flowtable 里有没有条目
+    if command -v nft >/dev/null 2>&1; then
+        echo "--- nft flowtable ---"
+        nft list flowtable inet fw4 ft 2>/dev/null | head -5
+    fi
+}
+
+case "$1" in
+    on)
+        if proxy_enabled && [ "$2" != "-f" ]; then
+            echo "拒绝开启：检测到代理已启用 -> $(proxy_names)"
+            echo "软件 flow offload 会让已建立的流绕过 netfilter，代理规则将失效。"
+            echo "若确要开启请用：offload-switch on -f（后果自负）"
+            exit 1
+        fi
+        _apply 1
+        ;;
+    off)
+        _apply 0
+        ;;
+    auto)
+        if proxy_enabled; then _apply 0; else _apply 1; fi
+        ;;
+    status|"")
+        do_status
+        ;;
+    *)
+        echo "用法: offload-switch {on|off|auto|status}"
+        echo "  on     开启软件+硬件 flow offload（代理开启时会拒绝，除非加 -f）"
+        echo "  off    关闭 flow offload（代理模式）"
+        echo "  auto   按代理开关自动决定（由 /etc/init.d/offload-guard 调用）"
+        echo "  status 查看当前状态"
+        exit 1
+        ;;
+esac
+
+exit 0

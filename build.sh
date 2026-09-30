@@ -327,12 +327,24 @@ verify() {
   chk "shadowsocks-rust 未被编入（省 CI 时间）" "! grep -q '^CONFIG_PACKAGE_shadowsocks-rust-sslocal=[ym]' .config"
   chk "nikki 依赖 yq 已编入"          "grep -q '^CONFIG_PACKAGE_yq=[ym]' .config"
   chk "nikki 依赖 kmod-dummy 已编入"  "grep -q '^CONFIG_PACKAGE_kmod-dummy=[ym]' .config"
+  chk "irqbalance 已编入（多核中断均衡）" "grep -q '^CONFIG_PACKAGE_irqbalance=[ym]' .config"
 
   echo "" >>"$R"; echo "[5b] 已知缺陷的修复是否在位" >>"$R"
   chk "overlay 含关闭自启脚本"        "test -f files/etc/uci-defaults/zz-zn515xg-d-no-proxy-autostart"
   chk "overlay 含 rc.local（每次开机重建 tmp bin 目录）" "test -f files/etc/rc.local"
   chk "关闭脚本已扩展为关闭 nikki"    "grep -q 'nikki' files/etc/uci-defaults/zz-zn515xg-d-no-proxy-autostart"
   chk "关闭脚本含 ln_run 双保险（核心转软链）" "grep -q 'ln -s' files/etc/uci-defaults/zz-zn515xg-d-no-proxy-autostart"
+
+  echo "" >>"$R"; echo "[5c] 卸载与代理的互斥策略（无线加速 + 不破坏代理）" >>"$R"
+  chk "overlay 含 offload-switch 工具"   "test -f files/usr/sbin/offload-switch"
+  chk "overlay 含 offload-guard 自启服务" "test -f files/etc/init.d/offload-guard"
+  chk "overlay 含网络调优 uci-defaults"   "test -f files/etc/uci-defaults/zz-zn515xg-d-net-tuning"
+  chk "offload-switch 语法正确"           "sh -n files/usr/sbin/offload-switch"
+  chk "offload-guard 语法正确"            "sh -n files/etc/init.d/offload-guard"
+  chk "net-tuning 语法正确"               "sh -n files/etc/uci-defaults/zz-zn515xg-d-net-tuning"
+  chk "出厂默认关闭 flow offload（安全侧）" "grep -q \"flow_offloading='0'\" files/etc/uci-defaults/zz-zn515xg-d-net-tuning"
+  chk "出厂开启 packet steering（不绕过 netfilter）" "grep -q \"packet_steering='1'\" files/etc/uci-defaults/zz-zn515xg-d-net-tuning"
+  chk "开启 flow offload 时会拦住已启用的代理" "grep -q '拒绝开启' files/usr/sbin/offload-switch"
 
   echo "" >>"$R"; echo "[6] 运营商参数不得写死（应全为空/未设置）" >>"$R"
   for k in loid loid_password serial_number ploam_password; do
@@ -343,7 +355,7 @@ verify() {
   echo "" >>"$R"
   echo "==============================================================" >>"$R"
   printf ' 汇总：PASS=%d  FAIL=%d\n' "$ok" "$bad" >>"$R"
-  echo " 注意：编译成功 != 实机验证成功。未上机验证项见 刷机说明.md 第 9 节。" >>"$R"
+  echo " 注意：编译成功 != 实机验证成功。未上机验证项见 刷机说明.md 第 11 节。" >>"$R"
   echo "==============================================================" >>"$R"
 
   cat "$R"

@@ -161,3 +161,25 @@ CONFIG_PACKAGE_mihomo-meta=y
 # kmod-nft-tproxy / kmod-tun / firewall4 已在前面各节显式声明，此处补齐两个：
 CONFIG_PACKAGE_yq=y
 CONFIG_PACKAGE_kmod-dummy=y
+
+# ---------- 13. 转发性能 / 卸载（与代理互斥，由 offload-guard 自动调度）----------
+# 【背景】MT7916D 的无线流量无法走 NPU，已核实：
+#   - mt76 源码（openwrt/mt76 @ be5ce79）里 mt7915/ 目录 grep -i npu = 0 行
+#   - NPU 只接在 mt7996 分支（Makefile: CONFIG_MT7996_NPU，且需 TARGET_airoha_an7581）
+#   - mt76_npu_init() 会设 dev->hwrro_mode，而 mt7915 驱动从不设置它（恒为
+#     MT76_HWRRO_OFF）；NPU 卸载要求硬件收包重排 HW-RRO，MT7915/7916 不具备
+#   → 无线侧唯一可用的加速是【软件 flow offload】，但它会绕过 netfilter，
+#     与代理插件冲突。PonWrt 出厂 /etc/config/firewall 默认还把它开成了 1。
+#
+# 因此本固件用 files/etc/init.d/offload-guard + files/usr/sbin/offload-switch 做
+# 自动互斥：代理开 → 关 offload；代理关 → 开 offload。出厂初始态写在安全侧（关）。
+#
+# 下面两项**不绕过 netfilter**，对代理完全无害，是真正稳定的增益：
+#   packet steering = RPS/XPS，把软中断摊到 4 个 A53 核上
+#     （uci: network.@globals[0].packet_steering='1'，由 netifd 的
+#      /etc/init.d/packet_steering 生效）
+#   irqbalance = 把 PCIe 无线网卡与网口的硬件中断均衡到多核
+CONFIG_PACKAGE_irqbalance=y
+# 软件流卸载的内核模块（第 5 节已含 kmod-nft-offload / kmod-nf-flow，此处钉死）
+CONFIG_PACKAGE_kmod-nft-offload=y
+CONFIG_PACKAGE_kmod-nf-flow=y

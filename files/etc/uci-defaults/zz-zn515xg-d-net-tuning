@@ -1,0 +1,65 @@
+#!/bin/sh
+# ZNXT ZN515XG-D / Airoha AN7581 —— 转发与卸载相关的首次启动默认值
+#
+# 【背景：无线到底能不能走 NPU？不能，而且不是配置问题】
+#
+#   1. NPU 本身是好的：DTS 里 &npu 和 &eth 都是 status="okay"，
+#      内核 CONFIG_NET_AIROHA_NPU=y，NPU 固件包也在 rootfs 里。
+#      → 有线侧（PPE）的硬件加速是可用的。
+#   2. 但无线接不上去。mt76 源码核实（openwrt/mt76 @ be5ce79）：
+#        * 整个 mt7915/ 目录 grep -i npu = 0 行
+#        * NPU 只接在 mt7996 分支：Makefile 里
+#            ifdef CONFIG_PACKAGE_kmod-mt7996e
+#              ifdef CONFIG_TARGET_airoha_an7581
+#                PKG_MAKE_FLAGS += CONFIG_MT76_NPU=y CONFIG_MT7996_NPU=y
+#        * 更硬的一条：mt76_npu_init() 里设置了
+#            dev->hwrro_mode = is_mt7996(dev) ? MT76_HWRRO_V3 : MT76_HWRRO_V3_1;
+#          而 mt7915 驱动**从不**设置 hwrro_mode，一直是 MT76_HWRRO_OFF。
+#          NPU 卸载依赖硬件收包重排（HW-RRO），MT7915/7916 不具备。
+#      → 结论：MT7916D 的无线流量无法走 NPU，任何改配置的做法都不成立。
+#   3. 无线侧唯一可用的加速 = **软件 flow offload**（nf_flow_table 快速路径）。
+#      但它的代价是让已建立的流绕过 netfilter，而代理插件全靠 nftables 工作。
+#
+# 【本固件采取的策略】
+#   - 无线/有线加速用软件 flow offload，但由 /etc/init.d/offload-guard
+#     与代理开关自动互斥：代理开 → 关 offload；代理关 → 开 offload。
+#   - 这里只写入**保守的初始状态**（关闭），开机时由 offload-guard 按
+#     实际代理状态再决定。即使 guard 没跑起来，也停在"不影响代理"的安全侧。
+#   - 另开 packet steering（RPS/XPS 多核分摊软中断）与 irqbalance。
+#     这两项**不绕过 netfilter**，对代理完全无害，是无线吞吐的真正增益来源。
+# ---------------------------------------------------------------------------
+
+# 1) flow offload：初始写 0（安全侧），开机后由 offload-guard 自动决定
+if [ -f /etc/config/firewall ]; then
+    uci -q get firewall.@defaults[0] >/dev/null 2>&1 || uci -q add firewall defaults >/dev/null 2>&1
+    uci -q set firewall.@defaults[0].flow_offloading='0'
+    uci -q set firewall.@defaults[0].flow_offloading_hw='0'
+    # fullcone 是 PonWrt 自带默认值（1），保留不动：它只影响 NAT 行为，
+    # 与 flow offload 无关，对游戏/PT 有好处。
+    uci -q commit firewall
+fi
+
+# 2) packet steering：多核分摊软中断，不绕过 netfilter → 代理安全
+uci -q get network.@globals[0] >/dev/null 2>&1 || uci -q add network globals >/dev/null 2>&1
+uci -q set network.@globals[0].packet_steering='1'
+uci -q commit network
+
+# 3) irqbalance：把 PCIe 无线网卡与以太网口的中断摊到 4 个 A53 核上
+#    出厂 /etc/config/irqbalance 是 enabled '0'，这里打开
+if [ -f /etc/config/irqbalance ]; then
+    uci -q set irqbalance.irqbalance.enabled='1'
+    uci -q commit irqbalance
+    if [ -f /etc/init.d/irqbalance ]; then
+        /etc/init.d/irqbalance enable
+        /etc/init.d/irqbalance restart
+    fi
+fi
+
+# 4) 启用 offload-guard（START=89，早于代理的 START=99）
+if [ -f /etc/init.d/offload-guard ]; then
+    chmod +x /etc/init.d/offload-guard 2>/dev/null
+    chmod +x /usr/sbin/offload-switch 2>/dev/null
+    /etc/init.d/offload-guard enable
+fi
+
+exit 0
