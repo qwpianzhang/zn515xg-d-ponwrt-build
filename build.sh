@@ -169,22 +169,37 @@ EOF
   esac
 
   # 3.3a 兜底：关掉 sing-box 1.14 的 Naive outbound → libcronet → gn/host 链
-  # seed 里已把 CONFIG_SING_BOX_BUILD_NAIVE_OUTBOUND 设为 n，但上游 Makefile 写的是
-  # def_bool y，且 DEPENDS 带条件依赖 +SING_BOX_BUILD_NAIVE_OUTBOUND:libcronet。
-  # 这里直接对 feed Makefile 去掉条件依赖并把默认值改成 n，确保即使 Kconfig 把
-  # 符号顶回 y，也不会再拉入 Chromium 网络栈（gn host 编译失败会导致整轮 2h+ 白跑）。
+  # 上游 net/sing-box/Makefile 写的是 def_bool y（无 prompt，.config 里写 n 也无效），
+  # DEPENDS 带 +SING_BOX_BUILD_NAIVE_OUTBOUND:libcronet，GO_PKG_TAGS 还会加
+  # with_naive_outbound。三处都要去掉，否则 Kconfig 强制选中 libcronet，
+  # 其 PKG_BUILD_DEPENDS:=gn/host 在 CI 上编译失败，整轮 2h+ 白跑。
+  #
+  # 注意：feed 里的真实路径是 feeds/packages/net/sing-box/Makefile（两级目录），
+  # 不能用 feeds/*/sing-box/Makefile 这种单层 glob —— 上一轮就是这样漏补丁的。
   log "关闭 sing-box Naive outbound 重依赖链"
-  for mk in "$WORK/ponwrt"/feeds/*/sing-box/Makefile; do
+  PATCHED=0
+  while IFS= read -r mk; do
     [ -f "$mk" ] || continue
-    if grep -q "SING_BOX_BUILD_NAIVE_OUTBOUND" "$mk"; then
-      sed -i \
-        -e '/config SING_BOX_BUILD_NAIVE_OUTBOUND/,+3 s/def_bool y/def_bool n/' \
-        -e 's/+SING_BOX_BUILD_NAIVE_OUTBOUND:libcronet//g' \
-        -e 's/+SING_BOX_TINY_BUILD_NAIVE_OUTBOUND:libcronet//g' \
-        "$mk"
-      echo "  patched: $(basename "$(dirname "$mk")")/sing-box/Makefile"
-    fi
-  done
+    grep -q "SING_BOX_BUILD_NAIVE_OUTBOUND" "$mk" || continue
+    sed -i \
+      -e '/config SING_BOX_BUILD_NAIVE_OUTBOUND/,+3 s/def_bool y.*/def_bool n/' \
+      -e 's/+SING_BOX_BUILD_NAIVE_OUTBOUND:libcronet//g' \
+      -e 's/+SING_BOX_TINY_BUILD_NAIVE_OUTBOUND:libcronet//g' \
+      -e '/with_naive_outbound/d' \
+      "$mk"
+    echo "  patched: ${mk#"$WORK/ponwrt/"}"
+    PATCHED=$((PATCHED + 1))
+  done < <(find "$WORK/ponwrt/feeds" -type f -path '*/sing-box/Makefile' 2>/dev/null || true)
+  echo "  命中 sing-box/Makefile 数：$PATCHED"
+  if [ "$PATCHED" -eq 0 ]; then
+    echo "  WARN: 没找到含 SING_BOX_BUILD_NAIVE_OUTBOUND 的 Makefile"
+    echo "        （上游可能已移除该选项，以 defconfig 后的反向硬校验为准）"
+  fi
+
+  # 改过 Makefile 必须强制 metadata.pl 重扫，否则 tmp/.config-package.in 里
+  # 仍是旧的 DEPENDS，defconfig 会照旧选中 libcronet。
+  rm -f tmp/.config-package.in tmp/.config-target.in
+  rm -f tmp/info/.files-packageinfo-* 2>/dev/null || true
 
   log "make defconfig"
   make defconfig 2>&1 | tail -20
@@ -220,8 +235,13 @@ fitblk fit-check-sign nand-utils ubi-utils luci-mod-system luci"
     fi
   done
   if [ -n "$FORBIDDEN" ]; then
+    cp -a .config "$DEST/config.full" 2>/dev/null || true
     echo "FATAL: 以下包仍被选中，会拉入 gn/host 导致编译失败：$FORBIDDEN" >&2
-    echo "检查 sing-box 的 Naive outbound 配置与 feeds/*/sing-box/Makefile 补丁。" >&2
+    echo "检查 sing-box 的 Naive outbound 配置与 feeds/*/*/sing-box/Makefile 补丁。" >&2
+    echo "--- .config 中相关符号（已保存为 config.full 供上传）---" >&2
+    grep -E '^#? ?CONFIG_(PACKAGE_libcronet|PACKAGE_naiveproxy|SING_BOX.*NAIVE_OUTBOUND)' .config >&2 || true
+    echo "--- 仍引用 libcronet 的 feed Makefile ---" >&2
+    grep -rl 'libcronet' feeds/*/ --include=Makefile 2>/dev/null | head -10 >&2 || true
     exit 1
   fi
   echo "  Naive outbound 链状态: $(grep -E '^# CONFIG_SING_BOX_BUILD_NAIVE_OUTBOUND is not set|^CONFIG_SING_BOX_BUILD_NAIVE_OUTBOUND=y' .config | head -1 || echo '符号不存在(该 feed 版本无此选项)')"
