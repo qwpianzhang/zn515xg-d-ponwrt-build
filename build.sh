@@ -177,17 +177,38 @@ EOF
   # 注意：feed 里的真实路径是 feeds/packages/net/sing-box/Makefile（两级目录），
   # 不能用 feeds/*/sing-box/Makefile 这种单层 glob —— 上一轮就是这样漏补丁的。
   log "关闭 sing-box Naive outbound 重依赖链"
+  # 只做最小改动：def_bool y→n + 去掉两条条件 DEPENDS。
+  # 不要删含 with_naive_outbound 的行！上游有
+  #   ifneq ($(findstring with_naive_outbound,$(GO_PKG_TAGS)),)
+  #     TARGET_LDFLAGS += -lcronet
+  #   endif
+  # 删掉 ifneq 会留下孤立 endif，Makefile 语法坏掉 → metadata.pl 解析失败 →
+  # defconfig 把整个 sing-box 包剔除（run 43167511728 的失败点）。
+  # def_bool n 后 GO_PKG_TAGS 的 $(if ...) 展开为空，findstring 自然不成立，
+  # 不需要动 GO_PKG_TAGS 和那个 ifneq 块。
   PATCHED=0
   while IFS= read -r mk; do
     [ -f "$mk" ] || continue
     grep -q "SING_BOX_BUILD_NAIVE_OUTBOUND" "$mk" || continue
+    BEFORE=$(grep -cE '^[[:space:]]*(ifeq|ifneq|endif|define|endef)' "$mk" || true)
     sed -i \
       -e '/config SING_BOX_BUILD_NAIVE_OUTBOUND/,+3 s/def_bool y.*/def_bool n/' \
       -e 's/+SING_BOX_BUILD_NAIVE_OUTBOUND:libcronet//g' \
       -e 's/+SING_BOX_TINY_BUILD_NAIVE_OUTBOUND:libcronet//g' \
-      -e '/with_naive_outbound/d' \
       "$mk"
-    echo "  patched: ${mk#"$WORK/ponwrt/"}"
+    AFTER=$(grep -cE '^[[:space:]]*(ifeq|ifneq|endif|define|endef)' "$mk" || true)
+    if [ "$BEFORE" != "$AFTER" ]; then
+      echo "FATAL: 补丁破坏了 ${mk} 的控制块结构（$BEFORE → $AFTER）" >&2
+      exit 1
+    fi
+    NAIVE_DEF=$(sed -n '/config SING_BOX_BUILD_NAIVE_OUTBOUND/,+2p' "$mk" \
+                | grep -m1 'def_bool' || true)
+    case "$NAIVE_DEF" in
+      *'def_bool y'*)
+        echo "FATAL: ${mk} 的 Naive outbound 仍是 def_bool y，补丁未生效" >&2
+        exit 1;;
+    esac
+    echo "  patched: ${mk#"$WORK/ponwrt/"}（控制块 $BEFORE 个，结构未变）"
     PATCHED=$((PATCHED + 1))
   done < <(find "$WORK/ponwrt/feeds" -type f -path '*/sing-box/Makefile' 2>/dev/null || true)
   echo "  命中 sing-box/Makefile 数：$PATCHED"
@@ -221,9 +242,12 @@ fitblk fit-check-sign nand-utils ubi-utils luci-mod-system luci"
     grep -q "^CONFIG_PACKAGE_${s}=y" .config || MISSING="$MISSING $s"
   done
   if [ -n "$MISSING" ]; then
+    cp -a .config "$DEST/config.full" 2>/dev/null || true
     echo "FATAL: defconfig 后以下关键符号消失（feed 版本变动 / 包名改了 / 依赖不满足）：" >&2
     echo "  $MISSING" >&2
-    echo "请检查 feeds 更新日志并修正 zn515xg-d.seed 后重跑。" >&2
+    echo "已保存 config.full 供上传；请检查 feeds 更新日志并修正 zn515xg-d.seed 后重跑。" >&2
+    echo "--- .config 中 sing-box / libcronet 相关符号 ---" >&2
+    grep -E '^#? ?CONFIG_(PACKAGE_sing-box|PACKAGE_libcronet|SING_BOX.*NAIVE_OUTBOUND)' .config >&2 || true
     exit 1
   fi
   # 反向校验：重量级 / 不稳定的可选链绝不能混进 .config
