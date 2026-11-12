@@ -174,5 +174,26 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: build-log
-          path: out/*/build.log
+          path: |
+            out/*/build.log
+            out/*/build-fail-tail.log
+            out/*/config.full
           if-no-files-found: warn
+
+      # actions/cache 的隐式 post-save 在 job 失败时不会执行，2h+ 的 toolchain / dl
+      # 成果会全部丢失。这里显式保存，让下一次重编能命中缓存。
+      - name: Save ccache on failure
+        if: failure()
+        continue-on-error: true
+        uses: actions/cache/save@v4
+        with:
+          path: ~/.ccache
+          key: ccache-zn515xg-d-an7581-${{ github.run_id }}
+
+      - name: Save dl cache on failure
+        if: failure()
+        continue-on-error: true
+        uses: actions/cache/save@v4
+        with:
+          path: work/ponwrt/dl
+          key: dl-ponwrt-an7581-${{ github.run_id }}

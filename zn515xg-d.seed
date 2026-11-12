@@ -98,6 +98,19 @@ CONFIG_PACKAGE_luci-app-passwall2_Basic_Core_All=y
 CONFIG_PACKAGE_xray-core=y
 CONFIG_PACKAGE_sing-box=y
 
+# 【sing-box 1.14 的 Naive outbound 链必须关掉】
+# 上游 immortalwrt/packages net/sing-box/Makefile 给 full 版加了：
+#   config SING_BOX_BUILD_NAIVE_OUTBOUND  /  def_bool y
+#   DEPENDS += +SING_BOX_BUILD_NAIVE_OUTBOUND:libcronet
+# libcronet 是 Chromium 网络栈，PKG_BUILD_DEPENDS:=gn/host；gn 在 CI 上编译失败
+# （run 43149817429: "ERROR: package/feeds/packages/gn [host] failed to build"）。
+# 本固件不使用 Naive 出站（PassWall2 的 Naive 节点靠 naiveproxy，本来就没编入），
+# 关掉这条链既避开失败，也省掉体积/编译时间。build.sh 另有 feed Makefile 兜底补丁。
+# CONFIG_SING_BOX_BUILD_NAIVE_OUTBOUND is not set
+# CONFIG_SING_BOX_TINY_BUILD_NAIVE_OUTBOUND is not set
+# CONFIG_PACKAGE_libcronet is not set
+# CONFIG_PACKAGE_naiveproxy is not set
+
 # 以下 INCLUDE_* 在 aarch64 下同样 default y，逐个显式表态，不交给默认值：
 CONFIG_PACKAGE_luci-app-passwall2_INCLUDE_Haproxy=y
 CONFIG_PACKAGE_luci-app-passwall2_INCLUDE_ShadowsocksR_Libev_Client=y

@@ -168,6 +168,24 @@ EOF
     lean|*) ;;
   esac
 
+  # 3.3a 兜底：关掉 sing-box 1.14 的 Naive outbound → libcronet → gn/host 链
+  # seed 里已把 CONFIG_SING_BOX_BUILD_NAIVE_OUTBOUND 设为 n，但上游 Makefile 写的是
+  # def_bool y，且 DEPENDS 带条件依赖 +SING_BOX_BUILD_NAIVE_OUTBOUND:libcronet。
+  # 这里直接对 feed Makefile 去掉条件依赖并把默认值改成 n，确保即使 Kconfig 把
+  # 符号顶回 y，也不会再拉入 Chromium 网络栈（gn host 编译失败会导致整轮 2h+ 白跑）。
+  log "关闭 sing-box Naive outbound 重依赖链"
+  for mk in "$WORK/ponwrt"/feeds/*/sing-box/Makefile; do
+    [ -f "$mk" ] || continue
+    if grep -q "SING_BOX_BUILD_NAIVE_OUTBOUND" "$mk"; then
+      sed -i \
+        -e '/config SING_BOX_BUILD_NAIVE_OUTBOUND/,+3 s/def_bool y/def_bool n/' \
+        -e 's/+SING_BOX_BUILD_NAIVE_OUTBOUND:libcronet//g' \
+        -e 's/+SING_BOX_TINY_BUILD_NAIVE_OUTBOUND:libcronet//g' \
+        "$mk"
+      echo "  patched: $(basename "$(dirname "$mk")")/sing-box/Makefile"
+    fi
+  done
+
   log "make defconfig"
   make defconfig 2>&1 | tail -20
 
@@ -193,6 +211,20 @@ fitblk fit-check-sign nand-utils ubi-utils luci-mod-system luci"
     echo "请检查 feeds 更新日志并修正 zn515xg-d.seed 后重跑。" >&2
     exit 1
   fi
+  # 反向校验：重量级 / 不稳定的可选链绝不能混进 .config
+  # libcronet / naiveproxy 会触发 gn/host（run 43149817429 的失败点）。
+  FORBIDDEN=""
+  for p in libcronet naiveproxy; do
+    if grep -q "^CONFIG_PACKAGE_${p}=[ym]" .config; then
+      FORBIDDEN="$FORBIDDEN $p"
+    fi
+  done
+  if [ -n "$FORBIDDEN" ]; then
+    echo "FATAL: 以下包仍被选中，会拉入 gn/host 导致编译失败：$FORBIDDEN" >&2
+    echo "检查 sing-box 的 Naive outbound 配置与 feeds/*/sing-box/Makefile 补丁。" >&2
+    exit 1
+  fi
+  echo "  Naive outbound 链状态: $(grep -E '^# CONFIG_SING_BOX_BUILD_NAIVE_OUTBOUND is not set|^CONFIG_SING_BOX_BUILD_NAIVE_OUTBOUND=y' .config | head -1 || echo '符号不存在(该 feed 版本无此选项)')"
   echo "✅ 关键包校验通过（含后台升级所需 fitblk / fit-check-sign / luci-mod-system）"
 
   # 软报告：seed 里声明、但被 defconfig 丢弃的非关键符号（只记录，不致命）
@@ -267,15 +299,24 @@ compile() {
   else
     echo "BUILD FAILED —— 单线程复现定位"
     make -j1 V=s >"$DEST/build-fail.log" 2>&1 || true
+    # 保留尾部完整上下文（build-fail.log 可能几十 MB，只上传尾部），并留一份 .config
+    tail -n 3000 "$DEST/build-fail.log" > "$DEST/build-fail-tail.log" 2>/dev/null || true
+    cp -a .config "$DEST/config.full" 2>/dev/null || true
     {
-      echo "===== 错误行 ====="
-      grep -n -E "Error [0-9]|: error:|No such file|command not found|is not set|failed" "$DEST/build-fail.log" | head -60
+      echo "===== 错误行（最多 60 条）====="
+      # 注意：不能用 `grep | head` —— set -o pipefail 下 grep 会因 SIGPIPE 返回非 0，
+      # 触发 set -e 提前退出（run 43149817429 就因此丢了「日志尾部」段、退出码变 2）。
+      grep -n -m 60 -E "Error [0-9]|: error:|No such file|command not found|failed to build" \
+        "$DEST/build-fail.log" 2>/dev/null || true
       echo ""
-      echo "===== 日志尾部 ====="
-      tail -n 80 "$DEST/build-fail.log"
+      echo "===== -j1 V=s 日志尾部 ====="
+      tail -n 120 "$DEST/build-fail.log" 2>/dev/null || true
+      echo ""
+      echo "===== -j4 日志尾部 ====="
+      tail -n 40 "$DEST/build.log" 2>/dev/null || true
     } > "$DEST/failure-summary.txt"
     cat "$DEST/failure-summary.txt"
-    # build-fail.log 可能极大，只保留摘要
+    # build-fail.log 可能极大，只保留摘要与尾部
     rm -f "$DEST/build-fail.log"
     exit 1
   fi
