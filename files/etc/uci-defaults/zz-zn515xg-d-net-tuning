@@ -27,35 +27,62 @@
 #     实际代理状态再决定。即使 guard 没跑起来，也停在"不影响代理"的安全侧。
 #   - 另开 packet steering（RPS/XPS 多核分摊软中断）与 irqbalance。
 #     这两项**不绕过 netfilter**，对代理完全无害，是无线吞吐的真正增益来源。
+#
+# 【2026-11-12 起：升级幂等保护】
+#   uci-defaults 在 sysupgrade 保留配置后仍会重跑（新 rootfs 里的脚本是新的）。
+#   原版会无条件把 flow_offloading / packet_steering / irqbalance 写回默认值，
+#   把用户改过的设置抹掉。现在默认值只在「全新刷机」时写；升级后只做
+#   第 4 节的 offload-guard enable（这是固件自带服务，随固件启用是合理的）。
+#   与 zz-zn515xg-d-no-proxy-autostart 共用 /etc/zn515xg-d-firstboot 标记，
+#   该标记已列入 /etc/sysupgrade.conf 的跨升级保留清单。
+#   字母序上本脚本先于 no-proxy-autostart 执行，因此这里只**读**标记、不创建。
 # ---------------------------------------------------------------------------
 
-# 1) flow offload：初始写 0（安全侧），开机后由 offload-guard 自动决定
-if [ -f /etc/config/firewall ]; then
-    uci -q get firewall.@defaults[0] >/dev/null 2>&1 || uci -q add firewall defaults >/dev/null 2>&1
-    uci -q set firewall.@defaults[0].flow_offloading='0'
-    uci -q set firewall.@defaults[0].flow_offloading_hw='0'
-    # fullcone 是 PonWrt 自带默认值（1），保留不动：它只影响 NAT 行为，
-    # 与 flow offload 无关，对游戏/PT 有好处。
-    uci -q commit firewall
-fi
+MARK=/etc/zn515xg-d-firstboot
 
-# 2) packet steering：多核分摊软中断，不绕过 netfilter → 代理安全
-uci -q get network.@globals[0] >/dev/null 2>&1 || uci -q add network globals >/dev/null 2>&1
-uci -q set network.@globals[0].packet_steering='1'
-uci -q commit network
+proxy_is_enabled() {
+    [ "$(uci -q get passwall2.@global[0].enabled 2>/dev/null)" = "1" ] && return 0
+    [ "$(uci -q get openclash.config.enable 2>/dev/null)" = "1" ] && return 0
+    [ "$(uci -q get nikki.config.enabled 2>/dev/null)" = "1" ] && return 0
+    return 1
+}
 
-# 3) irqbalance：把 PCIe 无线网卡与以太网口的中断摊到 4 个 A53 核上
-#    出厂 /etc/config/irqbalance 是 enabled '0'，这里打开
-if [ -f /etc/config/irqbalance ]; then
-    uci -q set irqbalance.irqbalance.enabled='1'
-    uci -q commit irqbalance
-    if [ -f /etc/init.d/irqbalance ]; then
-        /etc/init.d/irqbalance enable
-        /etc/init.d/irqbalance restart
+APPLY_DEFAULTS=1
+[ -f "$MARK" ] && APPLY_DEFAULTS=0
+proxy_is_enabled && APPLY_DEFAULTS=0
+
+if [ "$APPLY_DEFAULTS" = "1" ]; then
+    # 1) flow offload：初始写 0（安全侧），开机后由 offload-guard 自动决定
+    if [ -f /etc/config/firewall ]; then
+        uci -q get firewall.@defaults[0] >/dev/null 2>&1 || uci -q add firewall defaults >/dev/null 2>&1
+        uci -q set firewall.@defaults[0].flow_offloading='0'
+        uci -q set firewall.@defaults[0].flow_offloading_hw='0'
+        # fullcone 是 PonWrt 自带默认值（1），保留不动：它只影响 NAT 行为，
+        # 与 flow offload 无关，对游戏/PT 有好处。
+        uci -q commit firewall
     fi
+
+    # 2) packet steering：多核分摊软中断，不绕过 netfilter → 代理安全
+    uci -q get network.@globals[0] >/dev/null 2>&1 || uci -q add network globals >/dev/null 2>&1
+    uci -q set network.@globals[0].packet_steering='1'
+    uci -q commit network
+
+    # 3) irqbalance：把 PCIe 无线网卡与以太网口的中断摊到 4 个 A53 核上
+    #    出厂 /etc/config/irqbalance 是 enabled '0'，这里打开
+    if [ -f /etc/config/irqbalance ]; then
+        uci -q set irqbalance.irqbalance.enabled='1'
+        uci -q commit irqbalance
+        if [ -f /etc/init.d/irqbalance ]; then
+            /etc/init.d/irqbalance enable
+            /etc/init.d/irqbalance restart
+        fi
+    fi
+else
+    logger -t zn515xg-d-net-tuning '后台升级后的重启：保留用户自定义的网络/卸载设置' 2>/dev/null || :
 fi
 
 # 4) 启用 offload-guard（START=89，早于代理的 START=99）
+#    每次启动都做：新 rootfs 里的 init.d 脚本需要重新 enable，且这是固件自带服务。
 if [ -f /etc/init.d/offload-guard ]; then
     chmod +x /etc/init.d/offload-guard 2>/dev/null
     chmod +x /usr/sbin/offload-switch 2>/dev/null

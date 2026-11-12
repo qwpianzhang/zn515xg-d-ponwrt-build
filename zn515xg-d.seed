@@ -183,3 +183,28 @@ CONFIG_PACKAGE_irqbalance=y
 # 软件流卸载的内核模块（第 5 节已含 kmod-nft-offload / kmod-nf-flow，此处钉死）
 CONFIG_PACKAGE_kmod-nft-offload=y
 CONFIG_PACKAGE_kmod-nf-flow=y
+
+# ---------- 14. LuCI 后台直接升级（sysupgrade）保障 ----------
+# 【为什么必须在这里显式声明 =y】
+#   target/linux/airoha/an7581/base-files/lib/upgrade/platform.sh 里写着：
+#     REQUIRE_IMAGE_METADATA=1
+#     RAMFS_COPY_BIN='fitblk fit_check_sign'
+#     platform_check_image() -> fit_check_image() -> fit_check_sign -f <image>
+#     platform_do_upgrade()  -> airoha_require_ubi_layout factory && fit_do_upgrade
+#   后台升级时 sysupgrade 会把 fitblk / fit_check_sign 复制进 ramfs 再做校验，
+#   少任何一个都会在校验阶段直接拒绝镜像（表现：LuCI 提示"镜像格式不受支持"）。
+#   而 configs/an7581.config 里这两项都是 =m（只出 ipk、不进 rootfs）：
+#     CONFIG_PACKAGE_fitblk=m / CONFIG_PACKAGE_fit-check-sign=m
+#   仅靠 an7581.mk 的 DEVICE_PACKAGES += fitblk 的 per-device rootfs 隐式行为并不可靠
+#   （9-30 那版的 config.full 实测仍是 =m）。这里显式钉成 =y。
+#   镜像侧的 append-metadata 由 Device/znxt_zn50xg-d-common 提供，无需配置。
+CONFIG_PACKAGE_fitblk=y
+CONFIG_PACKAGE_fit-check-sign=y
+CONFIG_PACKAGE_nand-utils=y
+CONFIG_PACKAGE_ubi-utils=y
+# LuCI「系统 → 备份/升级」页面由 luci-mod-system 提供
+CONFIG_PACKAGE_luci-mod-system=y
+# fwtool / sysupgrade / /lib/upgrade/* 由 base-files 提供，无需声明。
+# 注意：刻意不启用 luci-app-attendedsysupgrade —— 官方 ASU 服务器不认识
+# airoha/an7581 + 自定义 PonWrt 固件，开了只会让用户点「检查更新」得到报错。
+# 本固件的升级路径是：LuCI 后台上传 sysupgrade.itb，或 Release 固定 URL + sysupgrade。

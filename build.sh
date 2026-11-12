@@ -107,6 +107,16 @@ setup_feeds() {
            igmpproxy omcproxy ruby-yaml luci-compat lyaml; do
     "$WORK/ponwrt/scripts/feeds" install "$p" >/dev/null 2>&1 || true
   done
+
+  # 记录本次实际拉到的各 feed 版本，便于日后复现 / 对比「插件是否真更新了」
+  log "记录 feeds 版本"
+  : > "$DEST/feeds-revisions.txt"
+  for d in "$WORK/ponwrt/feeds"/*; do
+    [ -d "$d/.git" ] || continue
+    printf '%-24s %s\n' "$(basename "$d")" \
+      "$(git -C "$d" rev-parse HEAD 2>/dev/null || echo unknown)" >> "$DEST/feeds-revisions.txt"
+  done
+  cat "$DEST/feeds-revisions.txt"
 }
 
 # ---------------------------------------------------------------------------
@@ -160,6 +170,53 @@ EOF
 
   log "make defconfig"
   make defconfig 2>&1 | tail -20
+
+  # 3.3b 硬校验：make defconfig 会把 feeds 里找不到的符号**静默剔除**，不报错。
+  #      9-30 那版只做「验收报告」里的事后 chk，编完才发现少包已经晚了。
+  #      这里对「代理 + PON + 后台升级必需组件」做致命校验，缺一个就停。
+  log "defconfig 后硬校验（代理 / PON / 后台升级组件）"
+  REQUIRED_PACKAGES="luci-app-passwall2 luci-app-openclash luci-app-nikki \
+nikki mihomo-meta xray-core sing-box yq kmod-dummy \
+luci-app-pon airoha-ponctl luci-app-iptv \
+fitblk fit-check-sign nand-utils ubi-utils luci-mod-system luci"
+  MISSING=""
+  for p in $REQUIRED_PACKAGES; do
+    grep -q "^CONFIG_PACKAGE_${p}=[ym]" .config || MISSING="$MISSING $p"
+  done
+  for s in luci-app-passwall2_Basic_Core_All \
+           luci-app-passwall2_Nftables_Transparent_Proxy; do
+    grep -q "^CONFIG_PACKAGE_${s}=y" .config || MISSING="$MISSING $s"
+  done
+  if [ -n "$MISSING" ]; then
+    echo "FATAL: defconfig 后以下关键符号消失（feed 版本变动 / 包名改了 / 依赖不满足）：" >&2
+    echo "  $MISSING" >&2
+    echo "请检查 feeds 更新日志并修正 zn515xg-d.seed 后重跑。" >&2
+    exit 1
+  fi
+  echo "✅ 关键包校验通过（含后台升级所需 fitblk / fit-check-sign / luci-mod-system）"
+
+  # 软报告：seed 里声明、但被 defconfig 丢弃的非关键符号（只记录，不致命）
+  DROPPED=""
+  while IFS= read -r sym; do
+    [ -z "$sym" ] && continue
+    grep -q "^${sym}=[ym]" .config || DROPPED="$DROPPED ${sym#CONFIG_PACKAGE_}"
+  done < <(grep -E '^CONFIG_PACKAGE_[A-Za-z0-9_.+-]+=y$' "$HERE/zn515xg-d.seed" \
+           | sed 's/=y$//' || true)
+  if [ -n "$DROPPED" ]; then
+    echo "WARN: seed 中以下符号在新版 feeds 里已不存在，被 defconfig 丢弃（非致命）："
+    echo "  $DROPPED"
+    printf '%s\n' "$DROPPED" > "$DEST/dropped-symbols.txt"
+  fi
+
+  # 记录源码基线（workflow 是 git clone -b master --depth 1，不锁 SHA，必须留档）
+  {
+    echo "PONWRT_REPO=$PONWRT_REPO"
+    echo "PONWRT_BRANCH=$PONWRT_BRANCH"
+    echo "PONWRT_COMMIT=$(git rev-parse HEAD 2>/dev/null)"
+    echo "PONWRT_LAST_COMMIT=$(git log -1 --format='%ci %s' 2>/dev/null)"
+    echo "KERNEL_PATCHVER=$(grep -E '^KERNEL_PATCHVER' target/linux/airoha/Makefile 2>/dev/null)"
+  } > "$DEST/ponwrt-commit.txt"
+  cat "$DEST/ponwrt-commit.txt"
 
   # 3.4 自检
   echo "---- 目标设备自检 ----"
@@ -254,6 +311,25 @@ collect() {
     sha256sum ./*.itb ./*.bin 2>/dev/null > SHA256SUMS.mirror || true
   fi
 
+  # 后台升级能力自检：platform.sh 里 REQUIRE_IMAGE_METADATA=1，
+  # 镜像没有 append-metadata 生成的结构会被 sysupgrade 直接拒绝。
+  log "校验 sysupgrade 镜像 metadata 与体积"
+  for img in "$DEST"/*-sysupgrade.itb; do
+    [ -f "$img" ] || continue
+    if ! grep -aq 'metadata_version' "$img" || ! grep -aq 'supported_devices' "$img"; then
+      echo "FATAL: $(basename "$img") 缺少 sysupgrade metadata，LuCI 后台升级会被拒绝" >&2
+      exit 1
+    fi
+    echo "✅ $(basename "$img") 带 sysupgrade metadata"
+    sz="$(stat -c%s "$img")"
+    echo "   体积: $sz bytes ($((sz / 1024 / 1024)) MiB)"
+    # fit 卷由 U-Boot 分配，DTS 里未写死大小。9-30 基线 78.7MB 实测可刷。
+    # 超过 100MiB 时给告警（不致命），提示核对 U-Boot 的 fit 卷空间。
+    if [ "$sz" -gt $((100 * 1024 * 1024)) ]; then
+      echo "WARN: 镜像超过 100MiB，请确认 U-Boot 分配给 fit 卷的空间足够" >&2
+    fi
+  done
+
   log "产物目录：$DEST"
   ls -lh "$DEST"
 }
@@ -345,6 +421,19 @@ verify() {
   chk "出厂默认关闭 flow offload（安全侧）" "grep -q \"flow_offloading='0'\" files/etc/uci-defaults/zz-zn515xg-d-net-tuning"
   chk "出厂开启 packet steering（不绕过 netfilter）" "grep -q \"packet_steering='1'\" files/etc/uci-defaults/zz-zn515xg-d-net-tuning"
   chk "开启 flow offload 时会拦住已启用的代理" "grep -q '拒绝开启' files/usr/sbin/offload-switch"
+
+  echo "" >>"$R"; echo "[5d] LuCI 后台直接升级（sysupgrade）保障" >>"$R"
+  chk "fitblk 已编入（platform_check_image 依赖）" "grep -q '^CONFIG_PACKAGE_fitblk=[ym]' .config"
+  chk "fit-check-sign 已编入（RAMFS_COPY_BIN）" "grep -q '^CONFIG_PACKAGE_fit-check-sign=[ym]' .config"
+  chk "luci-mod-system 已编入（备份/升级页面）" "grep -q '^CONFIG_PACKAGE_luci-mod-system=[ym]' .config"
+  chk "nand-utils / ubi-utils 已编入" "grep -q '^CONFIG_PACKAGE_nand-utils=[ym]' .config && grep -q '^CONFIG_PACKAGE_ubi-utils=[ym]' .config"
+  chk "overlay 含 sysupgrade.conf 保留清单" "test -f files/etc/sysupgrade.conf"
+  chk "保留清单含首次启动标记" "grep -q 'zn515xg-d-firstboot' files/etc/sysupgrade.conf"
+  chk "关闭自启脚本有升级幂等保护" "grep -q 'needs_firstboot_init' files/etc/uci-defaults/zz-zn515xg-d-no-proxy-autostart"
+  chk "网络调优脚本有升级幂等保护" "grep -q 'APPLY_DEFAULTS' files/etc/uci-defaults/zz-zn515xg-d-net-tuning"
+  chk "sysupgrade.itb 带 metadata（REQUIRE_IMAGE_METADATA=1）" "grep -aq 'metadata_version' $DEST/*-sysupgrade.itb"
+  chk "源码 revision 已留档" "test -f $DEST/ponwrt-commit.txt"
+  chk "feeds 版本已留档" "test -f $DEST/feeds-revisions.txt"
 
   echo "" >>"$R"; echo "[6] 运营商参数不得写死（应全为空/未设置）" >>"$R"
   for k in loid loid_password serial_number ploam_password; do

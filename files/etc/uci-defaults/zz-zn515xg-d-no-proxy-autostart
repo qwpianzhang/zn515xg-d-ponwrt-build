@@ -1,7 +1,7 @@
 #!/bin/sh
 # ZNXT ZN515XG-D 三网通用固件 —— 首次启动默认值
 #
-# 目的：PassWall2 与 OpenClash 都编进固件，但刷机后一律不自动启动。
+# 目的：PassWall2 / OpenClash / Nikki 都编进固件，但刷机后一律不自动启动。
 #       开机即可用：PON → WAN → PPPoE/IPoE → IPv4/IPv6 → Wi-Fi → IPTV，
 #       代理由用户自己在 LuCI 里启用，且不得同时启用两个。
 #
@@ -15,40 +15,75 @@
 #   PassWall2  init.d = passwall2 / passwall2_server（START=99，装完默认 enabled）
 #   OpenClash  init.d = openclash（START=99，装完默认 enabled）
 #   Nikki      init.d = nikki（出厂 nikki.conf 里 option enabled '0'，但仍要 disable）
+#
+# 【2026-11-12 起：升级幂等保护 —— 保证 LuCI 后台直接升级不丢状态】
+#   uci-defaults 是 rootfs 的一部分且执行后会被删除，sysupgrade 保留配置时
+#   **不会**把旧系统的「已执行」状态带过来，所以每次后台升级后本脚本都会重跑。
+#   原版会无条件 disable 三个代理并把主开关写 0 —— 用户升级完发现代理全关、
+#   外网走了直连，很容易误判成固件坏了。
+#   现在只在「确实是全新刷机」时做初始化：
+#     * 有 /etc/zn515xg-d-firstboot 标记（由 /etc/sysupgrade.conf 跨升级保留）→ 跳过
+#     * 从没有该标记的旧版固件升级、且任一代理已启用 → 也跳过（保护在用状态）
+#   第 5 节的软链双保险是幂等的，每次启动都执行。
 # ---------------------------------------------------------------------------
 
-# 1) 关闭三个代理的开机自启
-for s in passwall2 passwall2_server openclash nikki; do
-    if [ -f "/etc/init.d/$s" ]; then
-        "/etc/init.d/$s" disable
-        "/etc/init.d/$s" stop 2>/dev/null
+MARK=/etc/zn515xg-d-firstboot
+
+proxy_is_enabled() {
+    [ "$(uci -q get passwall2.@global[0].enabled 2>/dev/null)" = "1" ] && return 0
+    [ "$(uci -q get openclash.config.enable 2>/dev/null)" = "1" ] && return 0
+    [ "$(uci -q get nikki.config.enabled 2>/dev/null)" = "1" ] && return 0
+    return 1
+}
+
+needs_firstboot_init() {
+    # 已经打过标记 = 这是一次升级后的重启，绝不重置用户状态
+    [ -f "$MARK" ] && return 1
+    # 兼容从 9-30 及更早版本升级：旧固件没有标记，但只要用户已经启用了
+    # 任一代理，就说明是在用中的系统，同样不重置。
+    proxy_is_enabled && return 1
+    return 0
+}
+
+if needs_firstboot_init; then
+    # 1) 关闭三个代理的开机自启
+    for s in passwall2 passwall2_server openclash nikki; do
+        if [ -f "/etc/init.d/$s" ]; then
+            "/etc/init.d/$s" disable
+            "/etc/init.d/$s" stop 2>/dev/null
+        fi
+    done
+
+    # 2) OpenClash 主开关保持关闭（/etc/config/openclash 是 ROM 自带，字段已核实）
+    if [ -f /etc/config/openclash ]; then
+        uci -q set openclash.config.enable='0'
+        uci -q set openclash.config.auto_update='0'
+        uci -q set openclash.config.enable_custom_dns='0'
+        uci -q commit openclash
     fi
-done
 
-# 2) OpenClash 主开关保持关闭（/etc/config/openclash 是 ROM 自带，字段已核实）
-if [ -f /etc/config/openclash ]; then
-    uci -q set openclash.config.enable='0'
-    uci -q set openclash.config.auto_update='0'
-    uci -q set openclash.config.enable_custom_dns='0'
-    uci -q commit openclash
+    # 3) PassWall2 主开关保持关闭
+    #    字段：config global / option enabled（见 0_default_config，出厂已是 '0'，这里兜底）
+    if [ -f /etc/config/passwall2 ]; then
+        uci -q set passwall2.@global[0].enabled='0'
+        uci -q set passwall2.@global[0].socks_enabled='0'
+        uci -q commit passwall2 2>/dev/null
+    fi
+
+    # 4) Nikki 主开关保持关闭（/etc/config/nikki 出厂已是 '0'，这里兜底）
+    if [ -f /etc/config/nikki ]; then
+        uci -q set nikki.config.enabled='0'
+        uci -q set nikki.config.init='0'
+        uci -q commit nikki 2>/dev/null
+    fi
+
+    # 5) 落标记。/etc/sysupgrade.conf 已把它列入保留清单，后续后台升级不会丢
+    printf '%s\n' "initialized $(date -u '+%Y-%m-%dT%H:%M:%SZ')" > "$MARK" 2>/dev/null || :
+else
+    logger -t zn515xg-d-firstboot '跳过首次启动初始化（已初始化或检测到代理在用，保留用户状态）' 2>/dev/null || :
 fi
 
-# 3) PassWall2 主开关保持关闭
-#    字段：config global / option enabled（见 0_default_config，出厂已是 '0'，这里兜底）
-if [ -f /etc/config/passwall2 ]; then
-    uci -q set passwall2.@global[0].enabled='0'
-    uci -q set passwall2.@global[0].socks_enabled='0'
-    uci -q commit passwall2 2>/dev/null
-fi
-
-# 4) Nikki 主开关保持关闭（/etc/config/nikki 出厂已是 '0'，这里兜底）
-if [ -f /etc/config/nikki ]; then
-    uci -q set nikki.config.enabled='0'
-    uci -q set nikki.config.init='0'
-    uci -q commit nikki 2>/dev/null
-fi
-
-# 5) 绕开 PassWall2 的 ln_run 软链机制的【双保险】
+# 6) 绕开 PassWall2 的 ln_run 软链机制的【双保险】—— 幂等，每次启动都做
 #    ln_run() 的判断是 [ ! -L "$file_func" ] —— 只有当源文件「不是软链」时
 #    才会去 ln -s 到 /tmp/etc/passwall2/bin。
 #    所以把 /usr/bin/xray 自己变成软链，ln_run 就会跳过软链步骤、直接用原路径
@@ -66,13 +101,13 @@ if [ -f /etc/rc.local ]; then
     /etc/rc.local 2>/dev/null
 fi
 
-# 6) 防火墙默认区配置存在性兜底（流卸载/硬件加速由用户在防火墙页自行开启）
+# 7) 防火墙默认区配置存在性兜底（只在不存在时创建，不覆盖用户设置）
 if [ -f /etc/config/firewall ]; then
     uci -q get firewall.@defaults[0] >/dev/null || uci -q add firewall defaults >/dev/null
     uci -q commit firewall
 fi
 
-# 7) 明确不写死任何运营商参数：
+# 8) 明确不写死任何运营商参数：
 #    /etc/config/pon   serial_number / registration_id / loid / loid_password 保持空
 #    /etc/config/iptv  service_vlan / multicast_vlan / igmp_vlan / lan_port 保持空
 #    这两份配置由 airoha-ponctl 与 luci-app-iptv 出厂提供，已经是空值，此处不动它们。

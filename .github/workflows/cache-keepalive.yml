@@ -1,0 +1,42 @@
+name: Keep build caches alive
+
+# GitHub Actions 缓存「7 天未访问自动回收」。9-30 那次编译后没有保活，
+# 11-12 查 actions/caches 已经是 total_count=0 —— 导致每次都要从零编工具链
+# （约 2.5 小时）。这里每天 restore 一次两个缓存，刷新 last_accessed_at。
+#
+# 用 actions/cache/restore 而不是 actions/cache：精确 key 故意填一个不存在的
+# 名字，靠 restore-keys 前缀命中最近一次编译保存的缓存，这样不会每天生成
+# 一个新 key 把 10GB 配额撑爆，只做「读一下」这个动作。
+
+on:
+  schedule:
+    - cron: '23 3 * * *'
+  workflow_dispatch:
+
+jobs:
+  keepalive:
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Refresh ccache cache
+        id: c1
+        uses: actions/cache/restore@v4
+        with:
+          path: ~/.ccache
+          key: ccache-zn515xg-d-an7581-keepalive
+          restore-keys: |
+            ccache-zn515xg-d-an7581-
+
+      - name: Refresh dl cache
+        id: c2
+        uses: actions/cache/restore@v4
+        with:
+          path: work/ponwrt/dl
+          key: dl-ponwrt-an7581-keepalive
+          restore-keys: |
+            dl-ponwrt-an7581-
+
+      - name: Show cache hit status
+        run: |
+          echo "ccache hit: ${{ steps.c1.outputs.cache-hit }}"
+          echo "dl hit:     ${{ steps.c2.outputs.cache-hit }}"
+          echo "保持缓存存活完成（cache miss 属正常，说明还没有编译产物可复用）"

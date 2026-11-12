@@ -24,6 +24,18 @@ on:
   push:
     branches:
       - main
+    # 只在真正影响固件的文件变动时编译。改 README / 刷机说明不再触发
+    # 一次 2.5 小时的完整构建；需要重编时也可用 workflow_dispatch 手动跑。
+    paths:
+      - 'build.sh'
+      - 'feeds.conf'
+      - 'zn515xg-d.seed'
+      - 'files/**'
+      - '.github/workflows/build-zn515xg-d.yml'
+
+# 发布 Release / 上传固件需要写权限（默认 GITHUB_TOKEN 常为只读）
+permissions:
+  contents: write
 
 jobs:
   build:
@@ -51,19 +63,24 @@ jobs:
           df -h /
           nproc
 
+      # 静态 key 的缺陷：第一次保存后之后每次都命中、且永远不会再保存，
+      # ccache 增量和新增的 dl 包全部丢失。改成「每次运行新 key + 前缀回退」，
+      # 配合 cache-keepalive.yml 每天刷新 last_accessed_at，避免 7 天未访问被回收。
       - name: Cache ccache
         uses: actions/cache@v4
         with:
           path: ~/.ccache
-          key: ccache-zn515xg-d-an7581
-          restore-keys: ccache-zn515xg-d-an7581
+          key: ccache-zn515xg-d-an7581-${{ github.run_id }}
+          restore-keys: |
+            ccache-zn515xg-d-an7581-
 
       - name: Cache source tarballs
         uses: actions/cache@v4
         with:
           path: work/ponwrt/dl
-          key: dl-ponwrt-an7581-v1
-          restore-keys: dl-ponwrt-an7581-v1
+          key: dl-ponwrt-an7581-${{ github.run_id }}
+          restore-keys: |
+            dl-ponwrt-an7581-
 
       - name: Run build
         run: |
@@ -74,6 +91,12 @@ jobs:
         if: always()
         run: |
           cat out/*/验收报告.txt 2>/dev/null || echo "无验收报告"
+          echo '--- 源码基线 ---'
+          cat out/*/ponwrt-commit.txt 2>/dev/null || true
+          echo '--- feeds 版本 ---'
+          cat out/*/feeds-revisions.txt 2>/dev/null || true
+          echo '--- 被 defconfig 剔除的符号 ---'
+          cat out/*/dropped-symbols.txt 2>/dev/null || echo "（无）"
           echo '--- 镜像 ---'
           find out -name '*.itb' -o -name '*.bin' | xargs -r ls -lh
 
@@ -84,6 +107,59 @@ jobs:
           name: ponwrt-${{ env.TARGET_DEVICE }}
           path: out/*/
           if-no-files-found: error
+
+      # 固定 tag 的 Release = 稳定的下载地址，以后后台升级可以直接用这个 URL：
+      #   https://github.com/<owner>/<repo>/releases/download/znxt_zn515xg-d-latest/<sysupgrade.itb>
+      - name: Publish firmware to Release
+        if: success()
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          TAG="${TARGET_DEVICE}-latest"
+          DIR="$(find out -mindepth 1 -maxdepth 1 -type d | head -1)"
+          [ -n "$DIR" ] || { echo "no output dir"; exit 1; }
+          SYSUPGRADE="$(basename "$(find "$DIR" -maxdepth 1 -name '*-sysupgrade.itb' | head -1)")"
+
+          {
+            echo "## ${TARGET_DEVICE} PonWrt 固件"
+            echo
+            echo "构建时间：$(date -u '+%Y-%m-%d %H:%M UTC') · core_profile=${CORE_PROFILE}"
+            echo "源码基线见同目录下的 ponwrt-commit.txt 与 feeds-revisions.txt。"
+            echo
+            echo "### LuCI 后台直接升级"
+            echo
+            echo "1. 下载 \`${SYSUPGRADE}\`（本 Release 固定 tag \`${TAG}\`，以后重编也是同一个 URL）。"
+            echo "2. LuCI → 系统 → 备份/升级 → 刷写新固件，上传该 \`.itb\`，"
+            echo "   **保持「保留当前配置」勾选**，不要勾「强制升级」。"
+            echo "3. 等待约 3 分钟自动重启。首次刷机请用 \`*-initramfs-recovery.itb\` 和 U-Boot 恢复页。"
+            echo
+            echo "也可在 SSH 里执行："
+            echo '```sh'
+            echo "cd /tmp && wget -O sysupgrade.itb \\"
+            echo "  https://github.com/${GITHUB_REPOSITORY}/releases/download/${TAG}/${SYSUPGRADE}"
+            echo "sysupgrade -v /tmp/sysupgrade.itb"
+            echo '```'
+            echo
+            echo "### 升级后状态"
+            echo
+            echo "首次启动脚本带幂等保护，升级不会把已启用的 PassWall2 / OpenClash / Nikki 关掉；"
+            echo "\`/etc/sysupgrade.conf\` 明确保留了代理配置、运营商参数、SSH 密钥与首次启动标记。"
+          } > /tmp/release-notes.md
+
+          TITLE="${TARGET_DEVICE} PonWrt 固件 - $(date -u '+%Y-%m-%d %H:%M UTC')"
+          if gh release view "$TAG" -R "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release edit "$TAG" -R "$GITHUB_REPOSITORY" --title "$TITLE" --notes-file /tmp/release-notes.md
+          else
+            gh release create "$TAG" -R "$GITHUB_REPOSITORY" --title "$TITLE" --notes-file /tmp/release-notes.md
+          fi
+
+          mapfile -t FILES < <(find "$DIR" -maxdepth 1 -type f \
+            \( -name '*.itb' -o -name 'SHA256SUMS*' -o -name '验收报告.txt' \
+               -o -name 'ponwrt-commit.txt' -o -name 'feeds-revisions.txt' \
+               -o -name 'packages-in-rootfs.txt' -o -name 'dropped-symbols.txt' \) | sort)
+          gh release upload "$TAG" -R "$GITHUB_REPOSITORY" "${FILES[@]}" --clobber
+          echo "Release: https://github.com/${GITHUB_REPOSITORY}/releases/tag/${TAG}"
 
       - name: Upload failure summary
         if: failure()
