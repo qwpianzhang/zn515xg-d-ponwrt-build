@@ -456,7 +456,13 @@ verify() {
   fi
 
   echo "" >>"$R"; echo "[2] SHA256" >>"$R"
-  if [ -f "$DEST/SHA256SUMS.mirror" ]; then cat "$DEST/SHA256SUMS.mirror" >>"$R"; fi
+  if ls "$DEST"/*.itb >/dev/null 2>&1; then
+    for f in "$DEST"/*.itb; do
+      printf '  %s  %s\n' "$(sha256sum "$f" | cut -d' ' -f1)" "$(basename "$f")" >>"$R"
+    done
+  else
+    echo "  未找到任何 .itb 镜像" >>"$R"
+  fi
 
   echo "" >>"$R"; echo "[3] target / profile 核对" >>"$R"
   cd "$WORK/ponwrt" 2>/dev/null || true
@@ -542,7 +548,9 @@ verify() {
   chk "kmod-ipt-conntrack-extra 已编入（原不可用）" "grep -q '^CONFIG_PACKAGE_kmod-ipt-conntrack-extra=[ym]' .config"
   chk "kmod-ipt-ipopt 已编入（原不可用）"        "grep -q '^CONFIG_PACKAGE_kmod-ipt-ipopt=[ym]' .config"
   chk "legacy iptables 变体未被选中（避免 alternatives 冲突）" "! grep -q '^CONFIG_PACKAGE_iptables-zz-legacy=[ym]' .config && ! grep -q '^CONFIG_PACKAGE_ip6tables-zz-legacy=[ym]' .config"
-  chk "overlay 含 mwan3 出厂默认值脚本" "test -x files/etc/uci-defaults/zz-zn515xg-d-mwan3-defaults"
+  # PonWrt base-files 的 boot 里是 ( . "./$file" ) source 执行 uci-defaults，
+  # 不要求可执行位；只校验文件存在即可，避免 Windows core.filemode=false 误报。
+  chk "overlay 含 mwan3 出厂默认值脚本" "test -f files/etc/uci-defaults/zz-zn515xg-d-mwan3-defaults"
   chk "mwan3 默认值脚本语法正确"     "sh -n files/etc/uci-defaults/zz-zn515xg-d-mwan3-defaults"
   chk "出厂默认禁用 mwan3 服务"      "grep -q 'disable 2>/dev/null' files/etc/uci-defaults/zz-zn515xg-d-mwan3-defaults"
   chk "mwan3 脚本有升级幂等判断"     "grep -q 'user_configured_mwan3' files/etc/uci-defaults/zz-zn515xg-d-mwan3-defaults"
