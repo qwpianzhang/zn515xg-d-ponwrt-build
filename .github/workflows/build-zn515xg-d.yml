@@ -141,10 +141,22 @@ jobs:
             echo "sysupgrade -v /tmp/sysupgrade.itb"
             echo '```'
             echo
+            echo "### 本版新增：MWAN3 多 WAN"
+            echo
+            echo "\`luci-app-mwan3\` / \`mwan3\` 及完整依赖链已编入，含原本在 LuCI 软件包页显示「不可用」的"
+            echo "\`kmod-nft-compat\` / \`kmod-ip6tables\` / \`kmod-ipt-ipset\` /"
+            echo "\`kmod-ipt-conntrack-extra\` / \`kmod-ipt-ipopt\`——这些 kmod 随内核一起编译，不再依赖 opkg。"
+            echo
+            echo "出厂默认**不启用** mwan3 服务：设备只有一路 PON WAN，跑了只会插入策略路由并持续探测，"
+            echo "且 mwan3 的 iptables MARK 会与 PassWall2 / OpenClash / Nikki 的 mark 分流互相覆盖。"
+            echo "启用方式：LuCI → 网络 → 负载均衡配置好第二条 WAN，再执行"
+            echo "\`/etc/init.d/mwan3 enable && /etc/init.d/mwan3 start\`。只要配置与出厂不同，"
+            echo "首次启动脚本就不会再禁用它，后台升级也不会覆盖。"
+            echo
             echo "### 升级后状态"
             echo
             echo "首次启动脚本带幂等保护，升级不会把已启用的 PassWall2 / OpenClash / Nikki 关掉；"
-            echo "\`/etc/sysupgrade.conf\` 明确保留了代理配置、运营商参数、SSH 密钥与首次启动标记。"
+            echo "\`/etc/sysupgrade.conf\` 明确保留了代理配置、MWAN3 配置、运营商参数、SSH 密钥与首次启动标记。"
           } > /tmp/release-notes.md
 
           TITLE="${TARGET_DEVICE} PonWrt 固件 - $(date -u '+%Y-%m-%d %H:%M UTC')"

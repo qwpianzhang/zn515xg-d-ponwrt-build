@@ -1,0 +1,51 @@
+#!/bin/sh
+# ZNXT ZN515XG-D —— MWAN3 出厂默认值（编入但不默认接管路由）
+#
+# 【为什么需要这个脚本】
+#   mwan3 的出厂 /etc/config/mwan3 里 wan 接口是 enabled='1'，且包安装时
+#   init.d 默认开机自启。设备目前只有一路 PON WAN，装上就跑 mwan3 会：
+#     * 白白插入 mwan3_* iptables 链、ip rule 策略路由，持续探测 track_ip
+#     * 用 iptables MARK 给连接打标记，与 PassWall2 / OpenClash / Nikki 的
+#       mark 分流互相覆盖（三者都编在本固件里）
+#   所以与三个代理一致：编进固件，但默认不接管；需要多 WAN 时由用户启用。
+#
+# 【升级幂等：为什么用 /rom 对比而不是「首次启动标记」】
+#   uci-defaults 是 rootfs 的一部分，sysupgrade 保留配置后每次升级都会重跑。
+#   单纯用标记有两个坑：从没有 mwan3 的旧固件升级时标记不存在，新 rootfs 的
+#   服务却默认 enabled，不禁用就会在升级后突然插策略路由；而标记存在就无条件
+#   跳过，又会漏掉新包第一次出现的场景。
+#   这里改用 /rom（squashfs 只读出厂视图）与 /etc（overlay 用户配置）比对：
+#     字节相同 = 用户从没改过 mwan3 配置 → 保持禁用（每次启动都做，升级也安全）
+#     字节不同 = 用户已配置多 WAN      → 完全不干预，服务状态由用户自己决定
+#   /rom 不存在（initramfs 恢复镜像，本来就是临时系统）→ 一律保持禁用。
+#   因为判断每次都可重算，不需要任何跨升级保留的标记文件。
+# ---------------------------------------------------------------------------
+
+INIT_SCRIPT=/etc/init.d/mwan3
+CFG=/etc/config/mwan3
+ROM_CFG=/rom/etc/config/mwan3
+
+[ -x "$INIT_SCRIPT" ] || exit 0
+
+user_configured_mwan3() {
+    [ -f "$ROM_CFG" ] && [ -f "$CFG" ] || return 1
+    # 与出厂文件不同 = 用户动过配置
+    cmp -s "$ROM_CFG" "$CFG" || return 0
+    return 1
+}
+
+if user_configured_mwan3; then
+    logger -t zn515xg-d-mwan3 '检测到用户已配置 MWAN3，不干预服务状态' 2>/dev/null || :
+else
+    "$INIT_SCRIPT" disable 2>/dev/null || :
+    "$INIT_SCRIPT" stop 2>/dev/null || :
+    logger -t zn515xg-d-mwan3 'MWAN3 保持出厂禁用；配置第二条 WAN 后可自行启用' 2>/dev/null || :
+fi
+
+# 启用方式（LuCI 或 SSH）：
+#   1. LuCI → 网络 → 负载均衡，配置第二条 WAN 接口并启用（配置会与出厂不同）
+#   2. SSH: /etc/init.d/mwan3 enable && /etc/init.d/mwan3 start
+# 注意：若与 PassWall2 / OpenClash / Nikki 同时启用，两边的 mark 分流会冲突，
+#       需要自行规划 mark 掩码（mwan3 的 mmx_mask 与代理的 fwmark）。
+
+exit 0

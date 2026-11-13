@@ -228,11 +228,14 @@ EOF
   # 3.3b 硬校验：make defconfig 会把 feeds 里找不到的符号**静默剔除**，不报错。
   #      9-30 那版只做「验收报告」里的事后 chk，编完才发现少包已经晚了。
   #      这里对「代理 + PON + 后台升级必需组件」做致命校验，缺一个就停。
-  log "defconfig 后硬校验（代理 / PON / 后台升级组件）"
+  log "defconfig 后硬校验（代理 / PON / MWAN3 / 后台升级组件）"
   REQUIRED_PACKAGES="luci-app-passwall2 luci-app-openclash luci-app-nikki \
 nikki mihomo-meta xray-core sing-box yq kmod-dummy \
 luci-app-pon airoha-ponctl luci-app-iptv \
-fitblk fit-check-sign nand-utils ubi-utils luci-mod-system luci"
+fitblk fit-check-sign nand-utils ubi-utils luci-mod-system luci \
+luci-app-mwan3 mwan3 iptables-nft xtables-nft ip6tables-nft ipset \
+iptables-mod-conntrack-extra iptables-mod-ipopt \
+kmod-nft-compat kmod-ip6tables kmod-ipt-ipset kmod-ipt-conntrack-extra kmod-ipt-ipopt"
   MISSING=""
   for p in $REQUIRED_PACKAGES; do
     grep -q "^CONFIG_PACKAGE_${p}=[ym]" .config || MISSING="$MISSING $p"
@@ -250,18 +253,21 @@ fitblk fit-check-sign nand-utils ubi-utils luci-mod-system luci"
     grep -E '^#? ?CONFIG_(PACKAGE_sing-box|PACKAGE_libcronet|SING_BOX.*NAIVE_OUTBOUND)' .config >&2 || true
     exit 1
   fi
-  # 反向校验：重量级 / 不稳定的可选链绝不能混进 .config
-  # libcronet / naiveproxy 会触发 gn/host（run 43149817429 的失败点）。
+  # 反向校验：不该出现的包绝不能混进 .config
+  #   libcronet / naiveproxy → 触发 gn/host（run 43149817429 的失败点）
+  #   legacy iptables 变体   → 与 iptables-nft 都 PROVIDES:=iptables，
+  #                            两个一起装会抢 /usr/sbin/iptables 的 alternatives；
+  #                            本固件是 firewall4，只应存在 nft 变体。
   FORBIDDEN=""
-  for p in libcronet naiveproxy; do
+  for p in libcronet naiveproxy iptables-zz-legacy ip6tables-zz-legacy xtables-legacy; do
     if grep -q "^CONFIG_PACKAGE_${p}=[ym]" .config; then
       FORBIDDEN="$FORBIDDEN $p"
     fi
   done
   if [ -n "$FORBIDDEN" ]; then
     cp -a .config "$DEST/config.full" 2>/dev/null || true
-    echo "FATAL: 以下包仍被选中，会拉入 gn/host 导致编译失败：$FORBIDDEN" >&2
-    echo "检查 sing-box 的 Naive outbound 配置与 feeds/*/*/sing-box/Makefile 补丁。" >&2
+    echo "FATAL: 以下包不应被选中（gn/host 失败链 或 legacy/nft iptables 变体冲突）：$FORBIDDEN" >&2
+    echo "检查 sing-box 的 Naive outbound 配置、feeds/*/*/sing-box/Makefile 补丁，以及 zn515xg-d.seed 第 15 节。" >&2
     echo "--- .config 中相关符号（已保存为 config.full 供上传）---" >&2
     grep -E '^#? ?CONFIG_(PACKAGE_libcronet|PACKAGE_naiveproxy|SING_BOX.*NAIVE_OUTBOUND)' .config >&2 || true
     echo "--- 仍引用 libcronet 的 feed Makefile ---" >&2
@@ -519,6 +525,28 @@ verify() {
   chk "sysupgrade.itb 带 metadata（REQUIRE_IMAGE_METADATA=1）" "grep -aq 'metadata_version' $DEST/*-sysupgrade.itb"
   chk "源码 revision 已留档" "test -f $DEST/ponwrt-commit.txt"
   chk "feeds 版本已留档" "test -f $DEST/feeds-revisions.txt"
+
+  echo "" >>"$R"; echo "[5e] MWAN3 多 WAN 组件（编入但默认不接管路由）" >>"$R"
+  chk "luci-app-mwan3 已编入"       "grep -q '^CONFIG_PACKAGE_luci-app-mwan3=[ym]' .config"
+  chk "mwan3 主程序已编入"          "grep -q '^CONFIG_PACKAGE_mwan3=[ym]' .config"
+  chk "iptables-nft 已编入"         "grep -q '^CONFIG_PACKAGE_iptables-nft=[ym]' .config"
+  chk "xtables-nft 已编入"          "grep -q '^CONFIG_PACKAGE_xtables-nft=[ym]' .config"
+  chk "ip6tables-nft 已编入"        "grep -q '^CONFIG_PACKAGE_ip6tables-nft=[ym]' .config"
+  chk "ipset 已编入"                "grep -q '^CONFIG_PACKAGE_ipset=[ym]' .config"
+  chk "iptables-mod-conntrack-extra 已编入" "grep -q '^CONFIG_PACKAGE_iptables-mod-conntrack-extra=[ym]' .config"
+  chk "iptables-mod-ipopt 已编入"   "grep -q '^CONFIG_PACKAGE_iptables-mod-ipopt=[ym]' .config"
+  # 下面 5 个就是 LuCI 软件包页里显示「不可用」的 kmod，必须随内核一起编进来
+  chk "kmod-nft-compat 已编入（原不可用）"       "grep -q '^CONFIG_PACKAGE_kmod-nft-compat=[ym]' .config"
+  chk "kmod-ip6tables 已编入（原不可用）"        "grep -q '^CONFIG_PACKAGE_kmod-ip6tables=[ym]' .config"
+  chk "kmod-ipt-ipset 已编入（原不可用）"        "grep -q '^CONFIG_PACKAGE_kmod-ipt-ipset=[ym]' .config"
+  chk "kmod-ipt-conntrack-extra 已编入（原不可用）" "grep -q '^CONFIG_PACKAGE_kmod-ipt-conntrack-extra=[ym]' .config"
+  chk "kmod-ipt-ipopt 已编入（原不可用）"        "grep -q '^CONFIG_PACKAGE_kmod-ipt-ipopt=[ym]' .config"
+  chk "legacy iptables 变体未被选中（避免 alternatives 冲突）" "! grep -q '^CONFIG_PACKAGE_iptables-zz-legacy=[ym]' .config && ! grep -q '^CONFIG_PACKAGE_ip6tables-zz-legacy=[ym]' .config"
+  chk "overlay 含 mwan3 出厂默认值脚本" "test -x files/etc/uci-defaults/zz-zn515xg-d-mwan3-defaults"
+  chk "mwan3 默认值脚本语法正确"     "sh -n files/etc/uci-defaults/zz-zn515xg-d-mwan3-defaults"
+  chk "出厂默认禁用 mwan3 服务"      "grep -q 'disable 2>/dev/null' files/etc/uci-defaults/zz-zn515xg-d-mwan3-defaults"
+  chk "mwan3 脚本有升级幂等判断"     "grep -q 'user_configured_mwan3' files/etc/uci-defaults/zz-zn515xg-d-mwan3-defaults"
+  chk "sysupgrade.conf 保留 mwan3 配置" "grep -q '^/etc/config/mwan3' files/etc/sysupgrade.conf"
 
   echo "" >>"$R"; echo "[6] 运营商参数不得写死（应全为空/未设置）" >>"$R"
   for k in loid loid_password serial_number ploam_password; do

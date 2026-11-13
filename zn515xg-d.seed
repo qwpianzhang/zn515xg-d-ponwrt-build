@@ -221,3 +221,62 @@ CONFIG_PACKAGE_luci-mod-system=y
 # 注意：刻意不启用 luci-app-attendedsysupgrade —— 官方 ASU 服务器不认识
 # airoha/an7581 + 自定义 PonWrt 固件，开了只会让用户点「检查更新」得到报错。
 # 本固件的升级路径是：LuCI 后台上传 sysupgrade.itb，或 Release 固定 URL + sysupgrade。
+
+# ---------- 15. MWAN3 多 WAN 负载均衡 / 故障切换（含完整依赖链）----------
+# 【背景】LuCI 软件包页里 luci-app-mwan3 的依赖树中，
+#   kmod-ip6tables / kmod-nft-compat / kmod-ipt-ipset /
+#   kmod-ipt-conntrack-extra / kmod-ipt-ipopt  都显示「不可用」。
+# 原因不是内核不支持，而是 opkg 源里没有与本机 6.18.60 内核严格匹配的 kmod，
+# 而自定义固件的内核模块根本不该靠 opkg 装。这些包在 PonWrt 的
+# package/kernel/linux/modules/netfilter.mk 里全都有定义（已逐个核实），
+# 随内核一起编进 rootfs 才是正确解法。
+#
+# mwan3 2.12.5 的真实 DEPENDS（immortalwrt/packages net/mwan3/Makefile）：
+#   +ip +ipset +iptables +IPV6:ip6tables +iptables-mod-conntrack-extra
+#   +iptables-mod-ipopt +rpcd-mod-ucode +jshn
+# luci-app-mwan3 的 LUCI_DEPENDS：+luci-base +mwan3
+
+CONFIG_PACKAGE_luci-app-mwan3=y
+CONFIG_PACKAGE_luci-i18n-mwan3-zh-cn=y
+CONFIG_PACKAGE_mwan3=y
+
+# 用户态：只走 nft 变体。iptables-nft 是 iptables 的 DEFAULT_VARIANT（=1），
+# 与 iptables-zz-legacy 都 PROVIDES:=iptables，两个一起装会抢
+# /usr/sbin/iptables 的 alternatives；本固件用 firewall4，选 nft 变体才自洽。
+CONFIG_PACKAGE_iptables-nft=y
+CONFIG_PACKAGE_xtables-nft=y
+CONFIG_PACKAGE_ip6tables-nft=y
+CONFIG_PACKAGE_ipset=y
+CONFIG_PACKAGE_iptables-mod-conntrack-extra=y
+CONFIG_PACKAGE_iptables-mod-ipopt=y
+# CONFIG_PACKAGE_iptables-zz-legacy is not set
+# CONFIG_PACKAGE_ip6tables-zz-legacy is not set
+# CONFIG_PACKAGE_xtables-legacy is not set
+
+# 内核态：就是软件包页里显示「不可用」的那几个，逐个钉成 =y。
+# xtables-nft → +kmod-nft-compat（nft 兼容层，让 nft 能调 legacy xt match）
+# ip6tables-nft → +kmod-ip6tables；ipset → +kmod-ipt-ipset
+# iptables-mod-conntrack-extra → +kmod-ipt-conntrack-extra（→ +kmod-nf-conncount）
+# iptables-mod-ipopt → +kmod-ipt-ipopt
+# kmod-nf-conncount / kmod-nfnetlink / kmod-nf-reject6 / kmod-nf-ipt6 等由
+# 上游 DEPENDS 自动解析，不在此手写。
+CONFIG_PACKAGE_kmod-nft-compat=y
+CONFIG_PACKAGE_kmod-ip6tables=y
+CONFIG_PACKAGE_kmod-ipt-ipset=y
+CONFIG_PACKAGE_kmod-ipt-conntrack-extra=y
+CONFIG_PACKAGE_kmod-ipt-ipopt=y
+CONFIG_PACKAGE_kmod-ipt-core=y
+CONFIG_PACKAGE_kmod-nf-ipt=y
+
+# 依赖树里其余用户态库（libxtables / libiptext* / libipset* / libmnl0 /
+# libnftnl11 / libbpf1 / libelf1 / zlib / cgi-io / rpcd-mod-ucode / jshn /
+# ucode-mod-* 等）一律交给 defconfig 按 DEPENDS 自动选中。
+# 刻意不在此显式声明带 ABI 版本号的库名（如 libubox20261103、libxtables12）：
+# 这类名字随上游 ABI bump 变化，写死只会制造 dropped-symbols 噪声甚至被静默剔除。
+# ip-full / luci-base / rpcd / kernel 等已在第 3 / 7 节显式声明或为 base 包。
+
+# 【运行期注意，见 uci-defaults/zz-zn515xg-d-mwan3-defaults】
+# 出厂 /etc/config/mwan3 的 wan 接口是 enabled=1，服务装完默认开机自启，
+# 单 WAN 环境下会立刻插入策略路由并持续探测 track_ip，且 mwan3 的
+# iptables MARK 与 PassWall2 / OpenClash / Nikki 的 mark 分流会互相覆盖。
+# 因此本固件把 mwan3 编入但默认不自启，需要多 WAN 时由用户显式启用。
