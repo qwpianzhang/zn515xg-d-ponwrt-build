@@ -5,9 +5,12 @@
 #   mwan3 的出厂 /etc/config/mwan3 里 wan 接口是 enabled='1'，且包安装时
 #   init.d 默认开机自启。设备目前只有一路 PON WAN，装上就跑 mwan3 会：
 #     * 白白插入 mwan3_* iptables 链、ip rule 策略路由，持续探测 track_ip
-#     * 用 iptables MARK 给连接打标记，与 PassWall2 / OpenClash / Nikki 的
-#       mark 分流互相覆盖（三者都编在本固件里）
+#     * 与代理共用 32 位 mark 寄存器，没配第二条 WAN 时平白多一层不确定性
 #   所以与三个代理一致：编进固件，但默认不接管；需要多 WAN 时由用户启用。
+#
+# 【更正 2026-11-13】默认禁用的理由是「单 WAN 无收益」，不是「不能和代理同开」。
+#   PassWall2 官方已内置 mwan3 共存适配（nftables.sh 的 add_script_mwan3 /
+#   mwan3_start 会往 mwan3_hook 首位插 FWMARK 豁免 RETURN 规则），二者可同时启用。
 #
 # 【升级幂等：为什么用 /rom 对比而不是「首次启动标记」】
 #   uci-defaults 是 rootfs 的一部分，sysupgrade 保留配置后每次升级都会重跑。
@@ -45,7 +48,9 @@ fi
 # 启用方式（LuCI 或 SSH）：
 #   1. LuCI → 网络 → 负载均衡，配置第二条 WAN 接口并启用（配置会与出厂不同）
 #   2. SSH: /etc/init.d/mwan3 enable && /etc/init.d/mwan3 start
-# 注意：若与 PassWall2 / OpenClash / Nikki 同时启用，两边的 mark 分流会冲突，
-#       需要自行规划 mark 掩码（mwan3 的 mmx_mask 与代理的 fwmark）。
+# 注：PassWall2 自带 mwan3 共存适配（见文件头），可同时启用，无需改 mmx_mask；
+#     OpenClash / Nikki 未见同等适配，同时开时建议先核对分流是否符合预期。
+#     另外，代理的出站连接若被 mwan3 负载均衡到不同 WAN，出口 IP 会变化，
+#     建议在 mwan3 里给代理流量固定一条 WAN 策略。
 
 exit 0
