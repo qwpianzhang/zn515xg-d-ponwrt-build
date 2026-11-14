@@ -1,38 +1,42 @@
 #!/bin/sh
 # ZNXT ZN515XG-D 三网通用固件 —— 首次启动默认值
 #
-# 目的：PassWall2 / OpenClash / Nikki 都编进固件，但刷机后一律不自动启动。
+# 目的：HomeProxy / OpenClash / Nikki 都编进固件，但刷机后一律不接管流量。
 #       开机即可用：PON → WAN → PPPoE/IPoE → IPv4/IPv6 → Wi-Fi → IPTV，
 #       代理由用户自己在 LuCI 里启用，且不得同时启用两个。
 #
+# 【三个代理的「启用」判定方式并不一样，2026-11-14 核实】
+#   OpenClash  openclash.config.enable='0' + init.d disable
+#   Nikki      nikki.config.enabled='0'   + init.d disable
+#   HomeProxy  **没有 enabled 主开关**：init.d 的 start_service() 在
+#              homeproxy.config.main_node='nil' 时直接 return 1；LuCI 主节点
+#              下拉框的 'nil' 项标签就是 "Disable (the service)"。
+#              出厂 /etc/config/homeproxy 里 main_node 已是 nil。
+#              → 刻意**不 disable 它的 init.d**：一旦 disable，用户在 LuCI
+#                配好节点后开机不会自启，而 HomeProxy 页面没有单独的
+#                「启用开机自启」按钮，会变成一个很难排查的坑。
+#              这里只在全新刷机时兜底确认 main_node 仍是 nil。
+#
 # 【为什么文件名是 zz- 开头】
-#   OpenWrt 按文件名字母序执行 /etc/uci-defaults/*。
-#   PassWall2 自带的 uci-defaults 叫 luci-app-passwall2（无数字前缀），
-#   /etc/config/passwall2 是由它在运行时从 /usr/share/passwall2/0_default_config 拷贝生成的。
-#   用 99- 开头会排在它前面、那时配置文件还不存在；zz- 保证本脚本最后执行。
+#   OpenWrt 按文件名字母序执行 /etc/uci-defaults/*。HomeProxy 自带
+#   luci-homeproxy（会往 firewall 写 fw4 include），OpenClash / Nikki 也各有
+#   不带数字前缀的脚本；zz- 保证本脚本最后执行，配置段都已生成。
 #
-# 服务自启状态（三者都必须显式 disable）：
-#   PassWall2  init.d = passwall2 / passwall2_server（START=99，装完默认 enabled）
-#   OpenClash  init.d = openclash（START=99，装完默认 enabled）
-#   Nikki      init.d = nikki（出厂 nikki.conf 里 option enabled '0'，但仍要 disable）
-#
-# 【2026-11-12 起：升级幂等保护 —— 保证 LuCI 后台直接升级不丢状态】
+# 【升级幂等保护 —— 保证 LuCI 后台直接升级不丢状态】
 #   uci-defaults 是 rootfs 的一部分且执行后会被删除，sysupgrade 保留配置时
 #   **不会**把旧系统的「已执行」状态带过来，所以每次后台升级后本脚本都会重跑。
-#   原版会无条件 disable 三个代理并把主开关写 0 —— 用户升级完发现代理全关、
-#   外网走了直连，很容易误判成固件坏了。
-#   现在只在「确实是全新刷机」时做初始化：
+#   只在「确实是全新刷机」时做初始化：
 #     * 有 /etc/zn515xg-d-firstboot 标记（由 /etc/sysupgrade.conf 跨升级保留）→ 跳过
 #     * 从没有该标记的旧版固件升级、且任一代理已启用 → 也跳过（保护在用状态）
-#   第 5 节的软链双保险是幂等的，每次启动都执行。
 # ---------------------------------------------------------------------------
 
 MARK=/etc/zn515xg-d-firstboot
 
 proxy_is_enabled() {
-    [ "$(uci -q get passwall2.@global[0].enabled 2>/dev/null)" = "1" ] && return 0
     [ "$(uci -q get openclash.config.enable 2>/dev/null)" = "1" ] && return 0
     [ "$(uci -q get nikki.config.enabled 2>/dev/null)" = "1" ] && return 0
+    n="$(uci -q get homeproxy.config.main_node 2>/dev/null)"
+    [ -n "$n" ] && [ "$n" != "nil" ] && return 0
     return 1
 }
 
@@ -46,8 +50,8 @@ needs_firstboot_init() {
 }
 
 if needs_firstboot_init; then
-    # 1) 关闭三个代理的开机自启
-    for s in passwall2 passwall2_server openclash nikki; do
+    # 1) 只关闭 OpenClash / Nikki 的开机自启（HomeProxy 见文件头说明）
+    for s in openclash nikki; do
         if [ -f "/etc/init.d/$s" ]; then
             "/etc/init.d/$s" disable
             "/etc/init.d/$s" stop 2>/dev/null
@@ -62,19 +66,18 @@ if needs_firstboot_init; then
         uci -q commit openclash
     fi
 
-    # 3) PassWall2 主开关保持关闭
-    #    字段：config global / option enabled（见 0_default_config，出厂已是 '0'，这里兜底）
-    if [ -f /etc/config/passwall2 ]; then
-        uci -q set passwall2.@global[0].enabled='0'
-        uci -q set passwall2.@global[0].socks_enabled='0'
-        uci -q commit passwall2 2>/dev/null
-    fi
-
-    # 4) Nikki 主开关保持关闭（/etc/config/nikki 出厂已是 '0'，这里兜底）
+    # 3) Nikki 主开关保持关闭（/etc/config/nikki 出厂已是 '0'，这里兜底）
     if [ -f /etc/config/nikki ]; then
         uci -q set nikki.config.enabled='0'
         uci -q set nikki.config.init='0'
         uci -q commit nikki 2>/dev/null
+    fi
+
+    # 4) HomeProxy 兜底：出厂 main_node 必须是 nil，服务才不会接管流量。
+    #    只在全新刷机分支里写，升级分支绝不碰（用户可能已经配好节点）。
+    if [ -f /etc/config/homeproxy ]; then
+        uci -q set homeproxy.config.main_node='nil'
+        uci -q commit homeproxy 2>/dev/null
     fi
 
     # 5) 落标记。/etc/sysupgrade.conf 已把它列入保留清单，后续后台升级不会丢
@@ -83,19 +86,9 @@ else
     logger -t zn515xg-d-firstboot '跳过首次启动初始化（已初始化或检测到代理在用，保留用户状态）' 2>/dev/null || :
 fi
 
-# 6) 绕开 PassWall2 的 ln_run 软链机制的【双保险】—— 幂等，每次启动都做
-#    ln_run() 的判断是 [ ! -L "$file_func" ] —— 只有当源文件「不是软链」时
-#    才会去 ln -s 到 /tmp/etc/passwall2/bin。
-#    所以把 /usr/bin/xray 自己变成软链，ln_run 就会跳过软链步骤、直接用原路径
-#    执行，从根上不再依赖 /tmp 下的那个目录是否存在。
-#    （每次开机重建目录的补丁在 /etc/rc.local，两者互为冗余。）
-for b in xray sing-box haproxy chinadns-ng tcping mihomo; do
-    p="/usr/bin/$b"
-    if [ -e "$p" ] && [ ! -L "$p" ]; then
-        mv "$p" "${p}.real" 2>/dev/null && ln -s "${p}.real" "$p" 2>/dev/null
-    fi
-done
-# 确保 rc.local 可执行并立刻执行一次（不必等到下次开机）
+# 6) 确保 rc.local 可执行并立刻执行一次（幂等，每次启动都做）
+#    PassWall2 移除后不再需要 ln_run 软链双保险：那段逻辑纯粹是绕开
+#    PassWall2 的 /tmp/etc/passwall2/bin 目录缺失问题，与 HomeProxy 无关。
 if [ -f /etc/rc.local ]; then
     chmod +x /etc/rc.local 2>/dev/null
     /etc/rc.local 2>/dev/null

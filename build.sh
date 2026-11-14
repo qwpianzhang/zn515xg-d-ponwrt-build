@@ -1,14 +1,12 @@
 #!/usr/bin/env bash
 # =============================================================================
 # ZNXT ZN515XG-D (Airoha AN7581) 三网通用 PonWrt 一键构建脚本
-# 代理方案：PassWall2 + OpenClash（PassWall v1 已移除）
+# 代理方案：HomeProxy + OpenClash + Nikki（PassWall / PassWall2 已整体移除）
 #
 # 运行环境：Linux（Ubuntu 22.04/24.04 或 WSL2）。Windows 原生 Git-Bash 不支持。
 #
-#   ./build.sh                       # full ：PassWall2 双核心 xray + sing-box（默认）
-#   CORE_PROFILE=lean ./build.sh     # lean ：只带 xray-core（注意：此时 Xray 类型节点
-#                                   #         没有 allowInsecure 开关）
-#   CORE_PROFILE=none ./build.sh     # none ：仍带 xray-core（choice 无空选项）
+#   ./build.sh    # 单一策略：sing-box（HomeProxy）+ mihomo-meta（Nikki / OpenClash）
+#                 # 不再有 PassWall2 的 Basic_Core choice，也就没有 CORE_PROFILE 之分。
 #
 # 机型：同一个 SoC（Airoha AN7581），target/linux/airoha/image/an7581.mk 里
 #       TARGET_DEVICES 列出的机型都可用 TARGET_DEVICE 切换：
@@ -34,7 +32,6 @@ PONWRT_BRANCH="${PONWRT_BRANCH:-master}"
 TARGET_DEVICE="${TARGET_DEVICE:-znxt_zn515xg-d}"
 DEVICE="$TARGET_DEVICE"
 DEVICE_DTS="znxt,zn515xg-d"
-CORE_PROFILE="${CORE_PROFILE:-full}"
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
 WORK="${WORK:-$HERE/work}"
@@ -101,9 +98,9 @@ setup_feeds() {
   "$WORK/ponwrt/scripts/feeds" install -a 2>&1 | tail -10
 
   log "补装关键包（新 feed 可能未被 -a 覆盖）"
-  for p in luci-app-passwall2 luci-app-openclash luci-app-iptv luci-app-pon \
-           xray-core sing-box chinadns-ng tcping \
-           v2ray-geoip v2ray-geosite geoview \
+  for p in luci-app-homeproxy ucode-mod-digest sing-box \
+           luci-app-openclash luci-app-nikki nikki mihomo-meta \
+           luci-app-iptv luci-app-pon \
            igmpproxy omcproxy ruby-yaml luci-compat lyaml; do
     "$WORK/ponwrt/scripts/feeds" install "$p" >/dev/null 2>&1 || true
   done
@@ -141,32 +138,11 @@ EOF
 
   # 3.3 core 体积策略
   #
-  # 注意：PassWall2 的 Basic_Core 是一个 choice（Xray / SingBox / All），
-  # 没有「不选 core」的选项，所以 none 也仍会带 xray-core（体积约 15-20MB）。
-  # 想要完全不带 core，得把 luci-app-passwall2 一起去掉。
-  case "$CORE_PROFILE" in
-    none)
-      # 仍然选 Xray（choice 无空选项），但不追加任何额外 core
-      sed -i -E 's#^CONFIG_PACKAGE_luci-app-passwall2_Basic_Core_All=[ym]$#\# CONFIG_PACKAGE_luci-app-passwall2_Basic_Core_All is not set#' .config
-      grep -q '^CONFIG_PACKAGE_luci-app-passwall2_Basic_Core_Xray=y' .config || \
-        echo 'CONFIG_PACKAGE_luci-app-passwall2_Basic_Core_Xray=y' >> .config
-      ;;
-    full)
-      # xray-core + sing-box 双核心，外加 SS/SSR 插件；Seed 已显式声明，此处
-      # 只做「确认」——避免 aarch64 default y 陷阱把 ss-rust 这类重活悄悄拉进来。
-      cat >> .config <<'EOF'
-# PassWall2 双核心（xray-core + sing-box），详见 zn515xg-d.seed 第 9 节
-CONFIG_PACKAGE_luci-app-passwall2_Basic_Core_All=y
-# CONFIG_PACKAGE_luci-app-passwall2_Basic_Core_Xray is not set
-# CONFIG_PACKAGE_luci-app-passwall2_Basic_Core_SingBox is not set
-# 不编 shadowsocks-rust：SS 已被 xray-core / sing-box 覆盖，且它在 CI 上要多跑
-# 半小时以上 Rust 编译链条，收益不成比例。
-# CONFIG_PACKAGE_luci-app-passwall2_INCLUDE_Shadowsocks_Rust_Client is not set
-# CONFIG_PACKAGE_luci-app-passwall2_INCLUDE_Shadowsocks_Rust_Server is not set
-EOF
-      ;;
-    lean|*) ;;
-  esac
+  # PassWall2 移除后不再有 Basic_Core choice（Xray / SingBox / All），
+  # 也不再编 xray-core（约 15-20MB）。本版只有两个核心：
+  #   sing-box    → HomeProxy（seed 第 9 节）
+  #   mihomo-meta → Nikki / OpenClash（seed 第 12 / 10 节）
+  # 两者由各自 LUCI_DEPENDS / DEPENDS 自动选中，此处无需追加任何符号。
 
   # 3.3a 兜底：关掉 sing-box 1.14 的 Naive outbound → libcronet → gn/host 链
   # 上游 net/sing-box/Makefile 写的是 def_bool y（无 prompt，.config 里写 n 也无效），
@@ -229,8 +205,9 @@ EOF
   #      9-30 那版只做「验收报告」里的事后 chk，编完才发现少包已经晚了。
   #      这里对「代理 + PON + 后台升级必需组件」做致命校验，缺一个就停。
   log "defconfig 后硬校验（代理 / PON / MWAN3 / 后台升级组件）"
-  REQUIRED_PACKAGES="luci-app-passwall2 luci-app-openclash luci-app-nikki \
-nikki mihomo-meta xray-core sing-box yq kmod-dummy \
+  REQUIRED_PACKAGES="luci-app-homeproxy ucode-mod-digest sing-box \
+luci-app-openclash luci-app-nikki \
+nikki mihomo-meta yq kmod-dummy \
 luci-app-pon airoha-ponctl luci-app-iptv \
 fitblk fit-check-sign nand-utils ubi-utils luci-mod-system luci \
 luci-app-mwan3 mwan3 iptables-nft xtables-nft ip6tables-nft ipset \
@@ -239,10 +216,6 @@ kmod-nft-compat kmod-ip6tables kmod-ipt-ipset kmod-ipt-conntrack-extra kmod-ipt-
   MISSING=""
   for p in $REQUIRED_PACKAGES; do
     grep -q "^CONFIG_PACKAGE_${p}=[ym]" .config || MISSING="$MISSING $p"
-  done
-  for s in luci-app-passwall2_Basic_Core_All \
-           luci-app-passwall2_Nftables_Transparent_Proxy; do
-    grep -q "^CONFIG_PACKAGE_${s}=y" .config || MISSING="$MISSING $s"
   done
   if [ -n "$MISSING" ]; then
     cp -a .config "$DEST/config.full" 2>/dev/null || true
@@ -258,15 +231,18 @@ kmod-nft-compat kmod-ip6tables kmod-ipt-ipset kmod-ipt-conntrack-extra kmod-ipt-
   #   legacy iptables 变体   → 与 iptables-nft 都 PROVIDES:=iptables，
   #                            两个一起装会抢 /usr/sbin/iptables 的 alternatives；
   #                            本固件是 firewall4，只应存在 nft 变体。
+  #   PassWall / PassWall2 前端 → 本版整体移除，若被依赖悄悄拉回说明 feed/seed
+  #                            清理不干净，必须在这里拦住。
   FORBIDDEN=""
-  for p in libcronet naiveproxy iptables-zz-legacy ip6tables-zz-legacy xtables-legacy; do
+  for p in libcronet naiveproxy iptables-zz-legacy ip6tables-zz-legacy xtables-legacy \
+           luci-app-passwall luci-app-passwall2; do
     if grep -q "^CONFIG_PACKAGE_${p}=[ym]" .config; then
       FORBIDDEN="$FORBIDDEN $p"
     fi
   done
   if [ -n "$FORBIDDEN" ]; then
     cp -a .config "$DEST/config.full" 2>/dev/null || true
-    echo "FATAL: 以下包不应被选中（gn/host 失败链 或 legacy/nft iptables 变体冲突）：$FORBIDDEN" >&2
+    echo "FATAL: 以下包不应被选中（gn/host 失败链 / legacy iptables 冲突 / 已移除的 PassWall 前端）：$FORBIDDEN" >&2
     echo "检查 sing-box 的 Naive outbound 配置、feeds/*/*/sing-box/Makefile 补丁，以及 zn515xg-d.seed 第 15 节。" >&2
     echo "--- .config 中相关符号（已保存为 config.full 供上传）---" >&2
     grep -E '^#? ?CONFIG_(PACKAGE_libcronet|PACKAGE_naiveproxy|SING_BOX.*NAIVE_OUTBOUND)' .config >&2 || true
@@ -441,7 +417,7 @@ verify() {
     echo " AN7581 PonWrt 固件验收报告"
     echo " 生成时间: $(date -u '+%Y-%m-%d %H:%M:%S UTC')"
     echo " target_device: $DEVICE"
-    echo " core_profile:  $CORE_PROFILE"
+    echo " 代理方案:      HomeProxy + OpenClash + Nikki（sing-box + mihomo-meta）"
     echo "=============================================================="
     echo ""
     echo "[1] 镜像文件"
@@ -485,28 +461,29 @@ verify() {
   chk "802.1Q VLAN 内核内建"         "grep -rq '^CONFIG_VLAN_8021Q=[ym]' target/linux/generic/"
   chk "IGMP Snooping 内核内建"       "grep -rq '^CONFIG_BRIDGE_IGMP_SNOOPING=[ym]' target/linux/generic/"
 
-  echo "" >>"$R"; echo "[5] 代理插件（三个都编入，但默认都不启动）" >>"$R"
-  chk "luci-app-passwall2 已编入"     "grep -q '^CONFIG_PACKAGE_luci-app-passwall2=[ym]' .config"
+  echo "" >>"$R"; echo "[5] 代理插件（三个都编入，但默认都不接管流量）" >>"$R"
+  chk "luci-app-homeproxy 已编入"     "grep -q '^CONFIG_PACKAGE_luci-app-homeproxy=[ym]' .config"
+  chk "HomeProxy 中文包已编入"        "grep -q '^CONFIG_PACKAGE_luci-i18n-homeproxy-zh-cn=[ym]' .config"
+  chk "HomeProxy 依赖 ucode-mod-digest 已编入" "grep -q '^CONFIG_PACKAGE_ucode-mod-digest=[ym]' .config"
   chk "luci-app-openclash 已编入"     "grep -q '^CONFIG_PACKAGE_luci-app-openclash=[ym]' .config"
   chk "luci-app-nikki 已编入"         "grep -q '^CONFIG_PACKAGE_luci-app-nikki=[ym]' .config"
   chk "nikki 主程序已编入"             "grep -q '^CONFIG_PACKAGE_nikki=[ym]' .config"
   chk "mihomo-meta 核心已编入"         "grep -q '^CONFIG_PACKAGE_mihomo-meta=[ym]' .config"
   chk "mihomo-alpha 未被选中（与 meta 冲突）" "! grep -q '^CONFIG_PACKAGE_mihomo-alpha=[ym]' .config"
-  chk "PassWall v1 未被编入（已替换为 v2）" "! grep -q '^CONFIG_PACKAGE_luci-app-passwall=[ym]' .config"
-  chk "PassWall2 走 nftables 透明代理（fw4）" "grep -q '^CONFIG_PACKAGE_luci-app-passwall2_Nftables_Transparent_Proxy=y' .config"
-  chk "xray-core 已编入"               "grep -q '^CONFIG_PACKAGE_xray-core=[ym]' .config"
-  chk "sing-box 已编入（Hysteria2 与 allowInsecure 依赖它）" "grep -q '^CONFIG_PACKAGE_sing-box=[ym]' .config"
-  chk "PassWall2 双核心（Basic_Core_All）" "grep -q '^CONFIG_PACKAGE_luci-app-passwall2_Basic_Core_All=y' .config"
+  chk "PassWall v1/v2 前端均未编入"   "! grep -q '^CONFIG_PACKAGE_luci-app-passwall=[ym]' .config && ! grep -q '^CONFIG_PACKAGE_luci-app-passwall2=[ym]' .config"
+  chk "xray-core 未编入（PassWall2 移除后无使用者）" "! grep -q '^CONFIG_PACKAGE_xray-core=[ym]' .config"
+  chk "sing-box 已编入（HomeProxy 核心）" "grep -q '^CONFIG_PACKAGE_sing-box=[ym]' .config"
   chk "shadowsocks-rust 未被编入（省 CI 时间）" "! grep -q '^CONFIG_PACKAGE_shadowsocks-rust-sslocal=[ym]' .config"
   chk "nikki 依赖 yq 已编入"          "grep -q '^CONFIG_PACKAGE_yq=[ym]' .config"
   chk "nikki 依赖 kmod-dummy 已编入"  "grep -q '^CONFIG_PACKAGE_kmod-dummy=[ym]' .config"
   chk "irqbalance 已编入（多核中断均衡）" "grep -q '^CONFIG_PACKAGE_irqbalance=[ym]' .config"
 
-  echo "" >>"$R"; echo "[5b] 已知缺陷的修复是否在位" >>"$R"
+  echo "" >>"$R"; echo "[5b] 出厂默认值与升级幂等是否在位" >>"$R"
   chk "overlay 含关闭自启脚本"        "test -f files/etc/uci-defaults/zz-zn515xg-d-no-proxy-autostart"
-  chk "overlay 含 rc.local（每次开机重建 tmp bin 目录）" "test -f files/etc/rc.local"
-  chk "关闭脚本已扩展为关闭 nikki"    "grep -q 'nikki' files/etc/uci-defaults/zz-zn515xg-d-no-proxy-autostart"
-  chk "关闭脚本含 ln_run 双保险（核心转软链）" "grep -q 'ln -s' files/etc/uci-defaults/zz-zn515xg-d-no-proxy-autostart"
+  chk "overlay 含 rc.local"           "test -f files/etc/rc.local"
+  chk "关闭脚本覆盖 OpenClash / Nikki" "grep -q 'openclash' files/etc/uci-defaults/zz-zn515xg-d-no-proxy-autostart && grep -q 'nikki' files/etc/uci-defaults/zz-zn515xg-d-no-proxy-autostart"
+  chk "HomeProxy 出厂不接管（main_node 兜底）" "grep -q 'main_node' files/etc/uci-defaults/zz-zn515xg-d-no-proxy-autostart"
+  chk "关闭脚本有升级幂等保护"        "grep -q 'needs_firstboot_init' files/etc/uci-defaults/zz-zn515xg-d-no-proxy-autostart"
 
   echo "" >>"$R"; echo "[5c] 卸载与代理的互斥策略（无线加速 + 不破坏代理）" >>"$R"
   chk "overlay 含 offload-switch 工具"   "test -f files/usr/sbin/offload-switch"
@@ -518,6 +495,8 @@ verify() {
   chk "出厂默认关闭 flow offload（安全侧）" "grep -q \"flow_offloading='0'\" files/etc/uci-defaults/zz-zn515xg-d-net-tuning"
   chk "出厂开启 packet steering（不绕过 netfilter）" "grep -q \"packet_steering='1'\" files/etc/uci-defaults/zz-zn515xg-d-net-tuning"
   chk "开启 flow offload 时会拦住已启用的代理" "grep -q '拒绝开启' files/usr/sbin/offload-switch"
+  chk "offload-switch 识别 HomeProxy" "grep -q 'homeproxy' files/usr/sbin/offload-switch"
+  chk "offload-guard 监听 homeproxy 配置变更" "grep -q 'homeproxy' files/etc/init.d/offload-guard"
 
   echo "" >>"$R"; echo "[5d] LuCI 后台直接升级（sysupgrade）保障" >>"$R"
   chk "fitblk 已编入（platform_check_image 依赖）" "grep -q '^CONFIG_PACKAGE_fitblk=[ym]' .config"

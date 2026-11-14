@@ -7,7 +7,7 @@
 #     这些字段在 PonWrt 原生 UCI 中本来就是空的，见
 #     openwrt-pon-userspace/airoha-ponctl/files/pon.config
 #     openwrt-pon-userspace/luci-app-iptv/root/etc/config/iptv
-#   * PassWall / OpenClash 编入固件但默认不启动（见 files/etc/uci-defaults）
+#   * HomeProxy / OpenClash / Nikki 编入固件但默认不接管流量（见 files/etc/uci-defaults）
 #   * 保留 Airoha 流卸载栈，不破坏硬件加速
 # ---------------------------------------------------------------------------
 
@@ -53,7 +53,7 @@ CONFIG_PACKAGE_kmod-nft-bridge=y
 CONFIG_PACKAGE_kmod-nft-socket=y
 CONFIG_PACKAGE_mount-utils=y
 
-# ---------- 6. TProxy / TUN（PassWall 与 OpenClash 共用）----------
+# ---------- 6. TProxy / TUN（HomeProxy / OpenClash / Nikki 共用）----------
 CONFIG_PACKAGE_kmod-tun=y
 CONFIG_PACKAGE_kmod-nft-tproxy=y
 CONFIG_PACKAGE_kmod-inet-diag=y
@@ -80,23 +80,28 @@ CONFIG_PACKAGE_luci-i18n-opkg-zh-cn=y
 CONFIG_PACKAGE_dropbear=y
 CONFIG_PACKAGE_openssh-sftp-server=m
 
-# ---------- 9. PassWall2（LuCI 必编入；core 由 CORE_PROFILE 决定）----------
-# PassWall v1 已整体移除，改用 openwrt-passwall2（包名 luci-app-passwall2）
-CONFIG_PACKAGE_luci-app-passwall2=y
-CONFIG_PACKAGE_luci-i18n-passwall2-zh-cn=y
-
-# 【重要】Basic_Core 是一个 choice（Xray / SingBox / All），且在 aarch64 下
-# Basic_Core_All 就是 default。本版显式选 All = xray-core + sing-box 双核心：
-#   * xray-core → VLESS / VMess / Trojan / Shadowsocks / WireGuard / HTTP / SOCKS
-#   * sing-box  → 上述全部，外加 Hysteria2 / Tuic / AnyTLS / Naive / ShadowTLS /
-#                 ShadowSocksR（util_sing-box.lua:426 有 shadowsocksr outbound）
-# 【为什么必须带 sing-box】PassWall2 的 allowInsecure 只落在 util_sing-box.lua:251，
-#   util_xray.lua 里 grep -ci insecure == 0 —— Xray 类型节点根本没有「忽略证书」开关。
-# CONFIG_PACKAGE_luci-app-passwall2_Basic_Core_Xray is not set
-# CONFIG_PACKAGE_luci-app-passwall2_Basic_Core_SingBox is not set
-CONFIG_PACKAGE_luci-app-passwall2_Basic_Core_All=y
-CONFIG_PACKAGE_xray-core=y
+# ---------- 9. HomeProxy（ImmortalWrt 官方 sing-box 前端，替代 PassWall2）----------
+# 【本轮变更】PassWall / PassWall2 整套移除（前端、xray-core、haproxy、
+# chinadns-ng、tcping、geoview 等专属依赖一并不再选中），改用 luci feed 自带的
+# luci-app-homeproxy。理由：配置页精简，且原生支持 proxy_mode=tun —— 这是
+# 「软件 flow offload 与透明代理互斥」最干净的解法，见刷机说明 §9 与
+# files/usr/sbin/offload-switch 的注释。
+#
+# 依赖（applications/luci-app-homeproxy/Makefile 实测）：
+#   LUCI_DEPENDS:= +sing-box +firewall4 +kmod-nft-tproxy +ucode-mod-digest
+# firewall4 / kmod-nft-tproxy 已在第 3 / 6 节显式声明，这里补另外两个。
+CONFIG_PACKAGE_luci-app-homeproxy=y
+# luci.mk 里 LUCI_LC_ALIAS.zh_Hans=zh-cn，po/zh_Hans 生成的包名是 ...-zh-cn
+CONFIG_PACKAGE_luci-i18n-homeproxy-zh-cn=y
+CONFIG_PACKAGE_ucode-mod-digest=y
 CONFIG_PACKAGE_sing-box=y
+
+# 【HomeProxy 没有 enabled 主开关】init.d 的 start_service() 靠
+#   homeproxy.config.main_node 是否为 'nil' 判断要不要启动，出厂配置就是 nil；
+#   LuCI 主节点下拉框的 'nil' 项标签直接写着 "Disable (the service)"。
+# 所以编入固件即天然不接管流量，不需要像 OpenClash 那样显式 disable init.d，
+# 用户配好节点后服务能正常开机自启，不会踩「disable 后 LuCI 点启用无效」的坑。
+# 首次启动脚本只需兜底确认 main_node 仍是 nil，见 zz-zn515xg-d-no-proxy-autostart。
 
 # 【sing-box 1.14 的 Naive outbound 链必须关掉】
 # 上游 immortalwrt/packages net/sing-box/Makefile 给 full 版加了：
@@ -104,35 +109,12 @@ CONFIG_PACKAGE_sing-box=y
 #   DEPENDS += +SING_BOX_BUILD_NAIVE_OUTBOUND:libcronet
 # libcronet 是 Chromium 网络栈，PKG_BUILD_DEPENDS:=gn/host；gn 在 CI 上编译失败
 # （run 43149817429: "ERROR: package/feeds/packages/gn [host] failed to build"）。
-# 本固件不使用 Naive 出站（PassWall2 的 Naive 节点靠 naiveproxy，本来就没编入），
-# 关掉这条链既避开失败，也省掉体积/编译时间。build.sh 另有 feed Makefile 兜底补丁。
+# HomeProxy 不用 Naive 出站，关掉这条链既避开失败，也省掉体积/编译时间。
+# build.sh 另有 feed Makefile 兜底补丁（def_bool y→n + 去条件 DEPENDS）。
 # CONFIG_SING_BOX_BUILD_NAIVE_OUTBOUND is not set
 # CONFIG_SING_BOX_TINY_BUILD_NAIVE_OUTBOUND is not set
 # CONFIG_PACKAGE_libcronet is not set
 # CONFIG_PACKAGE_naiveproxy is not set
-
-# 以下 INCLUDE_* 在 aarch64 下同样 default y，逐个显式表态，不交给默认值：
-CONFIG_PACKAGE_luci-app-passwall2_INCLUDE_Haproxy=y
-CONFIG_PACKAGE_luci-app-passwall2_INCLUDE_ShadowsocksR_Libev_Client=y
-CONFIG_PACKAGE_luci-app-passwall2_INCLUDE_Simple_Obfs=y
-CONFIG_PACKAGE_luci-app-passwall2_INCLUDE_V2ray_Plugin=y
-# Shadowsocks Rust：SS 能力已由 xray-core 与 sing-box 覆盖，而它在 CI 上要多跑
-# 半小时以上的 Rust 编译链条，收益不成比例，故不编入。需要时把下面改成 =y 即可。
-# CONFIG_PACKAGE_luci-app-passwall2_INCLUDE_Shadowsocks_Rust_Client is not set
-# CONFIG_PACKAGE_luci-app-passwall2_INCLUDE_Shadowsocks_Rust_Server is not set
-# CONFIG_PACKAGE_luci-app-passwall2_INCLUDE_ShadowsocksR_Libev_Server is not set
-
-# 透明代理后端：本固件用 firewall4，走 nftables（Makefile 里 default y if PACKAGE_firewall4）
-CONFIG_PACKAGE_luci-app-passwall2_Nftables_Transparent_Proxy=y
-# CONFIG_PACKAGE_luci-app-passwall2_Iptables_Transparent_Proxy is not set
-
-# LUCI_DEPENDS 中的必要项（其余如 lyaml / lua / luci-lib-jsonc / resolveip /
-# coreutils* / geoview / v2ray-geoip / v2ray-geosite 由 defconfig 自动选中）
-CONFIG_PACKAGE_chinadns-ng=y
-CONFIG_PACKAGE_tcping=y
-CONFIG_PACKAGE_unzip=y
-CONFIG_PACKAGE_curl=y
-CONFIG_PACKAGE_xray-core=y
 
 # ---------- 10. OpenClash（LuCI 必编入，Mihomo core 运行期下载，不占 ROM）----------
 CONFIG_PACKAGE_luci-app-openclash=y
@@ -155,12 +137,12 @@ CONFIG_PACKAGE_nand-utils=y
 CONFIG_PACKAGE_ubi-utils=y
 CONFIG_PACKAGE_htop=m
 
-# ---------- 12. Nikki（Mihomo 透明代理，与 PassWall2 / OpenClash 三选一）----------
+# ---------- 12. Nikki（Mihomo 透明代理，与 HomeProxy / OpenClash 三选一）----------
 # 协议覆盖由 Mihomo 核心决定，实测 Consumer 侧这几种都在：
 #   VLESS / VMess / Trojan / Shadowsocks / Hysteria / Hysteria2 / Tuic / WireGuard /
 #   AnyTLS / ShadowTLS / HTTP / SOCKS
-# 注：SSR 仍在 PassWall2 的 sing-box 分支那边（Mihomo 没有 SSR outbound），
-#     所以「SSR + VLESS + Hysteria2 全都要」的场景是靠两个插件互补完成的。
+# 注：Mihomo 没有 SSR outbound；本版 sing-box 由 HomeProxy 使用，能否在
+#     HomeProxy 里配 SSR 节点取决于上游节点类型支持，不在 seed 里写死。
 CONFIG_PACKAGE_luci-app-nikki=y
 CONFIG_PACKAGE_luci-i18n-nikki-zh-cn=y
 CONFIG_PACKAGE_nikki=y
@@ -186,6 +168,19 @@ CONFIG_PACKAGE_kmod-dummy=y
 #
 # 因此本固件用 files/etc/init.d/offload-guard + files/usr/sbin/offload-switch 做
 # 自动互斥：代理开 → 关 offload；代理关 → 开 offload。出厂初始态写在安全侧（关）。
+#
+# 【2026-11-14 补充：HomeProxy 的 TUN 模式可以打破这个二选一】
+#   互斥的根源在 fw4 的 ruleset.uc：
+#     chain forward { meta l4proto { tcp, udp } flow offload @ft; ... }
+#   这条规则是 forward 链**第一条**（在所有 chain-prepend include 之前），
+#   而 flowtable 挂在 `hook ingress priority 0`。连接一旦被加入 flowtable，
+#   后续包在二层快速路径直接转发，绕过 prerouting 的 REDIRECT/TPROXY 和所有
+#   nft 规则 —— 所以不是「配置冲突」，而是代理规则根本没机会执行。
+#   HomeProxy 支持 proxy_mode='tun'：流量被策略路由送进 singtun0 由 sing-box
+#   用户态接管，而 fw4 flowtable 的 devices 只列 LAN/WAN 物理接口、不含 tun，
+#   代理流量不会被 offload；直连/国内/IPTV 流量仍可照常卸载。
+#   → 想两者兼得：HomeProxy 设 tun 模式，再 `offload-switch on -f`，
+#     实测代理与国内吞吐后决定是否长期使用。默认策略仍保持互斥（安全侧）。
 #
 # 下面两项**不绕过 netfilter**，对代理完全无害，是真正稳定的增益：
 #   packet steering = RPS/XPS，把软中断摊到 4 个 A53 核上
@@ -280,14 +275,10 @@ CONFIG_PACKAGE_kmod-nf-ipt=y
 # 单 WAN 环境下会白插策略路由、持续探测 track_ip、占一份资源，却没有任何收益。
 # 因此本固件把 mwan3 编入但默认不自启，配好第二条 WAN 后由用户显式启用。
 #
-# 【与代理共存：2026-11-13 核实后更正】
-# 早先注释写「mwan3 的 MARK 与代理 mark 必然冲突」是不准确的。实际上：
+# 【与代理共存】
 #   * mwan3 的每条 mark 规则都带 /$MMX_MASK（默认 0x3F00），只碰掩码内的位；
-#     ip rule 优先级用 1001–3999。它本来就设计成与其他 mark 使用者共存。
-#   * PassWall2 的 FWMARK=0x50535732，ip rule 用 priority 999（比 1001 优先），
-#     并自带 add_script_mwan3() / mwan3_start()：往 mwan3_hook 链首位插入
-#     「-m connmark --mark 0x50535732/0xffffffff -j RETURN」豁免代理流量，
-#     还在 /etc/init.d/mwan3 的 start/stop 里注入 hook 保证 mwan3 重启后重建。
-#     → PassWall2 + mwan3 是官方支持的组合，不需要用户自己改 mark 掩码。
-#   * OpenClash / Nikki 未见同等适配，同时启用时建议先核对分流是否正确。
-# 默认禁用 mwan3 的理由只是「单 WAN 无收益」，不是「不能与代理同开」。
+#     ip rule 用 1001–3999，本来就设计成与其他 mark 使用者共存。
+#   * 上一版曾核实「PassWall2 官方内置 mwan3_hook 豁免规则」；本版已移除
+#     PassWall2，该结论不再适用。HomeProxy / OpenClash / Nikki 均未核实到
+#     同等的 mwan3 豁免适配，同时启用前请先核对分流是否正确。
+# 默认禁用 mwan3 的理由只是「单 WAN 无收益」。

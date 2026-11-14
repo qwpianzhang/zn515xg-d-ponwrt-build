@@ -41,9 +41,11 @@
 MARK=/etc/zn515xg-d-firstboot
 
 proxy_is_enabled() {
-    [ "$(uci -q get passwall2.@global[0].enabled 2>/dev/null)" = "1" ] && return 0
     [ "$(uci -q get openclash.config.enable 2>/dev/null)" = "1" ] && return 0
     [ "$(uci -q get nikki.config.enabled 2>/dev/null)" = "1" ] && return 0
+    # HomeProxy 没有 enabled 开关，main_node != nil 才算在用
+    n="$(uci -q get homeproxy.config.main_node 2>/dev/null)"
+    [ -n "$n" ] && [ "$n" != "nil" ] && return 0
     return 1
 }
 

@@ -4,7 +4,7 @@
 #
 # 规则：任一代理启用 → 关 offload；全部关闭 → 开 offload。
 # 触发时机：开机（START=89，早于代理的 START=99）、以及
-#           passwall2 / nikki / openclash 三个 uci 配置被修改时。
+#           homeproxy / nikki / openclash 三个 uci 配置被修改时。
 #
 # 写法参照 OpenWrt 自带的 /etc/init.d/packet_steering
 # （USE_PROCD=1 但 start_service 不开 instance，只做一次性动作）。
@@ -30,5 +30,5 @@ reload_service() {
 }
 
 service_triggers() {
-    procd_add_reload_trigger "passwall2" "nikki" "openclash"
+    procd_add_reload_trigger "homeproxy" "nikki" "openclash"
 }

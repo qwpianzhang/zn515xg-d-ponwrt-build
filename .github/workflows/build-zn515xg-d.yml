@@ -12,15 +12,6 @@ on:
           - znxt_zn515xg-d
           - fiberhome_hg5585f-ct
           - fiberhome_hg5585f-cu
-      core_profile:
-        description: 'PassWall2 core 策略'
-        required: true
-        default: 'full'
-        type: choice
-        options:
-          - none
-          - lean
-          - full
   push:
     branches:
       - main
@@ -40,13 +31,12 @@ permissions:
 jobs:
   build:
     runs-on: ubuntu-22.04
-    # GitHub 单 job 上限 360 分钟；full 策略要编 xray + sing-box + mihomo 三个
-    # Go 核心（含 golang bootstrap），比 lean 慢得多，留足余量。
+    # GitHub 单 job 上限 360 分钟；本版要编 sing-box + mihomo 两个 Go 核心
+    # （含 golang bootstrap），留足余量。
     timeout-minutes: 355
 
     env:
       TARGET_DEVICE: ${{ github.event.inputs.target_device || 'znxt_zn515xg-d' }}
-      CORE_PROFILE: ${{ github.event.inputs.core_profile || 'full' }}
 
     steps:
       - name: Checkout
@@ -124,7 +114,7 @@ jobs:
           {
             echo "## ${TARGET_DEVICE} PonWrt 固件"
             echo
-            echo "构建时间：$(date -u '+%Y-%m-%d %H:%M UTC') · core_profile=${CORE_PROFILE}"
+            echo "构建时间：$(date -u '+%Y-%m-%d %H:%M UTC') · 代理方案 HomeProxy + OpenClash + Nikki"
             echo "源码基线见同目录下的 ponwrt-commit.txt 与 feeds-revisions.txt。"
             echo
             echo "### LuCI 后台直接升级"
@@ -141,24 +131,37 @@ jobs:
             echo "sysupgrade -v /tmp/sysupgrade.itb"
             echo '```'
             echo
-            echo "### 本版新增：MWAN3 多 WAN"
+            echo "### 本版变更：HomeProxy 替代 PassWall2"
             echo
-            echo "\`luci-app-mwan3\` / \`mwan3\` 及完整依赖链已编入，含原本在 LuCI 软件包页显示「不可用」的"
-            echo "\`kmod-nft-compat\` / \`kmod-ip6tables\` / \`kmod-ipt-ipset\` /"
-            echo "\`kmod-ipt-conntrack-extra\` / \`kmod-ipt-ipopt\`——这些 kmod 随内核一起编译，不再依赖 opkg。"
+            echo "**PassWall / PassWall2 整套移除**（前端、xray-core、haproxy、chinadns-ng、"
+            echo "tcping、geoview 与两个 passwall feed），新增 \`luci-app-homeproxy\` 及中文包。"
+            echo "HomeProxy 是 luci feed 自带的 sing-box 前端，依赖 \`sing-box\` / \`firewall4\` /"
+            echo "\`kmod-nft-tproxy\` / \`ucode-mod-digest\`，配置页比 PassWall2 精简。"
             echo
-            echo "出厂默认**不启用** mwan3 服务：设备只有一路 PON WAN，跑了只会白插策略路由、"
-            echo "持续探测 track_ip，没有收益。这不是因为它不能和代理同开——"
-            echo "**PassWall2 官方已内置 mwan3 共存适配**（往 mwan3_hook 首位插入 FWMARK 豁免"
-            echo "RETURN 规则，ip rule 优先级 999 早于 mwan3 的 1001），两者可同时启用；"
-            echo "OpenClash / Nikki 未见同等适配，同时开时建议先核对分流。"
-            echo "启用方式：LuCI → 网络 → 负载均衡配置好第二条 WAN，再执行"
-            echo "\`/etc/init.d/mwan3 enable && /etc/init.d/mwan3 start\`。只要配置与出厂不同，"
-            echo "首次启动脚本就不会再禁用它，后台升级也不会覆盖。"
+            echo "HomeProxy **没有 enabled 主开关**：init.d 靠 \`homeproxy.config.main_node\` 是否为"
+            echo "\`nil\` 决定是否启动，出厂就是 nil（LuCI 主节点选 'nil' = Disable the service）。"
+            echo "因此编入即默认不接管流量，不需要 disable init.d；配好节点后能正常开机自启。"
+            echo "入口：服务 → HomeProxy。三个代理仍建议只启用一个。"
+            echo
+            echo "**无线流量卸载与代理共存**：默认仍由 offload-switch 互斥（代理开→关 offload）。"
+            echo "想两者兼得可把 HomeProxy 的 \`proxy_mode\` 设为 \`tun\`：代理流量走 singtun0 由"
+            echo "sing-box 用户态接管，不进 fw4 的 forward flowtable，直连/国内流量仍可卸载；"
+            echo "再用 \`offload-switch on -f\` 开启并实测。该组合未实机验证，故默认不启用，"
+            echo "详见刷机说明 §9。"
+            echo
+            echo "### 已内置：MWAN3 多 WAN"
+            echo
+            echo "\`luci-app-mwan3\` / \`mwan3\` 及完整依赖链已编入，含原本在 LuCI 软件包页显示"
+            echo "「不可用」的 \`kmod-nft-compat\` / \`kmod-ip6tables\` / \`kmod-ipt-ipset\` /"
+            echo "\`kmod-ipt-conntrack-extra\` / \`kmod-ipt-ipopt\`（随内核编译，不依赖 opkg）。"
+            echo "出厂默认不启用（单 WAN 无收益）；配好第二条 WAN 后执行"
+            echo "\`/etc/init.d/mwan3 enable && /etc/init.d/mwan3 start\`。"
+            echo "注意：上一版核实的 PassWall2 mwan3 豁免规则不适用于本版，HomeProxy /"
+            echo "OpenClash / Nikki 均未核实到同等适配，同时启用前请先核对分流。"
             echo
             echo "### 升级后状态"
             echo
-            echo "首次启动脚本带幂等保护，升级不会把已启用的 PassWall2 / OpenClash / Nikki 关掉；"
+            echo "首次启动脚本带幂等保护，升级不会把已启用的 OpenClash / Nikki / HomeProxy 关掉；"
             echo "\`/etc/sysupgrade.conf\` 明确保留了代理配置、MWAN3 配置、运营商参数、SSH 密钥与首次启动标记。"
           } > /tmp/release-notes.md
 

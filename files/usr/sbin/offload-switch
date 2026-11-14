@@ -11,29 +11,55 @@
 #      收包重排（HW-RRO），MT7915/7916 没这个能力。所以无线侧唯一的加速
 #      手段就是 **软件 flow offload**（nf_flow_table 快速路径）。
 #   2. 软件 flow offload 的本质是让已建立的流**绕过 netfilter**，
-#      而 PassWall2 / Nikki / OpenClash 全靠 nftables 规则工作。
-#      三者经核实都**不会**自己去关 offload（PassWall2 全包 grep -i offload 为空）。
+#      而 HomeProxy / Nikki / OpenClash 全靠 nftables 规则工作，且都不会
+#      自己去关 offload。冲突的真实机制（fw4 ruleset.uc，2026-11-14 核实）：
+#         chain forward {
+#           meta l4proto { tcp, udp } flow offload @ft;   ← forward 链第一条
+#           ... 所有 chain-prepend include 都排在这条之后 ...
+#         }
+#         flowtable ft { hook ingress priority 0; ... }
+#      连接一旦被加入 flowtable，后续包在二层快速路径直接转发，连 prerouting
+#      的 REDIRECT/TPROXY 都轮不到执行。所以不是「配置冲突」，是代理规则
+#      根本没机会运行；普通 fw4 include 也拦不住（位置在 flow offload 之后）。
 #   3. PonWrt 出厂 /etc/config/firewall 默认就是
 #         option flow_offloading   1
 #         option flow_offloading_hw  1
-#      （见 package/network/config/firewall4/patches/
-#        001-firewall4-add-support-for-fullcone-nat.patch）
-#      → 也就是说开箱即用的状态下，代理有可能被旁路。
+#      → 开箱即用状态下代理有可能被旁路。
 #
-# 【本脚本的策略】
+# 【本脚本的策略（默认保守）】
 #   代理开着 → 关 offload（保证代理行为完全可预测）
 #   代理全关 → 开 offload（拿到无线/有线的最高转发性能）
-#   这个切换由 /etc/init.d/offload-guard 在开机和代理开关变化时自动执行，
-#   你也可以手工调用。
+#   这个切换由 /etc/init.d/offload-guard 在开机和代理开关变化时自动执行。
+#
+# 【2026-11-14：HomeProxy 的 TUN 模式可以打破这个二选一】
+#   HomeProxy 支持 proxy_mode='tun'（LuCI → 服务 → HomeProxy → 路由设置）。
+#   此时客户端流量被策略路由送进 singtun0，由 sing-box 用户态接管；而 fw4
+#   flowtable 的 devices 只列 LAN/WAN 物理接口、不含 tun 设备，代理流量不会被
+#   offload，直连 / 国内 / IPTV 流量仍照常卸载。于是两者可以共存：
+#       1) 把 HomeProxy 的 proxy_mode 设为 tun，确认代理正常
+#       2) offload-switch on -f
+#       3) 分别实测国外站点与国内大文件吞吐，再决定是否长期使用
+#   代价：代理流量本身不被加速（本来也不可能加速），且该组合尚未实机验证，
+#   所以**默认不自动开启**，只在 -f 时由用户显式承担。
+#   另一种更彻底但更折腾的做法是关掉 fw4 内建 offload、自建带 mark 条件的
+#   flowtable（HomeProxy 出厂 tproxy_mark=101 / tun_mark=102 可用），需要维护
+#   devices 列表，不在本固件里固化。
 # ---------------------------------------------------------------------------
 
 FW=/etc/config/firewall
 
 log() { logger -t offload-switch "$@" 2>/dev/null; echo "$@"; }
 
+# HomeProxy 没有 enabled 开关：main_node != 'nil' 才算在用
+homeproxy_enabled() {
+    local n
+    n="$(uci -q get homeproxy.config.main_node 2>/dev/null)"
+    [ -n "$n" ] && [ "$n" != "nil" ]
+}
+
 # 是否任一代理处于启用状态
 proxy_enabled() {
-    [ "$(uci -q get passwall2.@global[0].enabled 2>/dev/null)" = "1" ] && return 0
+    homeproxy_enabled && return 0
     [ "$(uci -q get nikki.config.enabled 2>/dev/null)" = "1" ] && return 0
     [ "$(uci -q get openclash.config.enable 2>/dev/null)" = "1" ] && return 0
     return 1
@@ -41,7 +67,7 @@ proxy_enabled() {
 
 proxy_names() {
     local n=""
-    [ "$(uci -q get passwall2.@global[0].enabled 2>/dev/null)" = "1" ] && n="$n PassWall2"
+    homeproxy_enabled && n="$n HomeProxy"
     [ "$(uci -q get nikki.config.enabled 2>/dev/null)" = "1" ] && n="$n Nikki"
     [ "$(uci -q get openclash.config.enable 2>/dev/null)" = "1" ] && n="$n OpenClash"
     [ -n "$n" ] && echo "$n" || echo "（无）"
@@ -69,6 +95,7 @@ _apply() {
 do_status() {
     _ensure_defaults
     echo "代理状态    : $(proxy_names)"
+    echo "HomeProxy proxy_mode : $(uci -q get homeproxy.config.proxy_mode 2>/dev/null || echo '<未配置>')"
     echo "flow_offloading    : $(uci -q get firewall.@defaults[0].flow_offloading 2>/dev/null)"
     echo "flow_offloading_hw : $(uci -q get firewall.@defaults[0].flow_offloading_hw 2>/dev/null)"
     echo "packet_steering    : $(uci -q get network.@globals[0].packet_steering 2>/dev/null)"
@@ -85,7 +112,10 @@ case "$1" in
         if proxy_enabled && [ "$2" != "-f" ]; then
             echo "拒绝开启：检测到代理已启用 -> $(proxy_names)"
             echo "软件 flow offload 会让已建立的流绕过 netfilter，代理规则将失效。"
-            echo "若确要开启请用：offload-switch on -f（后果自负）"
+            echo ""
+            echo "若想两者兼得：先把 HomeProxy 的 proxy_mode 设为 tun（流量走 singtun0，"
+            echo "不进 fw4 forward flowtable），再用 'offload-switch on -f' 开启并实测。"
+            echo "该组合未实机验证，请自行确认代理与国内吞吐后再长期使用。"
             exit 1
         fi
         _apply 1
@@ -101,10 +131,10 @@ case "$1" in
         ;;
     *)
         echo "用法: offload-switch {on|off|auto|status}"
-        echo "  on     开启软件+硬件 flow offload（代理开启时会拒绝，除非加 -f）"
-        echo "  off    关闭 flow offload（代理模式）"
-        echo "  auto   按代理开关自动决定（由 /etc/init.d/offload-guard 调用）"
-        echo "  status 查看当前状态"
+        echo "  on [-f] 开启软件+硬件 flow offload（代理开启时会拒绝，除非加 -f）"
+        echo "  off     关闭 flow offload（代理模式）"
+        echo "  auto    按代理开关自动决定（由 /etc/init.d/offload-guard 调用）"
+        echo "  status  查看当前状态（含 HomeProxy proxy_mode 与 nft flowtable）"
         exit 1
         ;;
 esac

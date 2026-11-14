@@ -21,9 +21,9 @@
 
 1. 把本目录作为仓库根目录推到 GitHub：
    新建仓库（例如 zn515xg-d-ponwrt），上传本目录全部内容（含 .github/ 目录）
-2. 仓库 → Actions → Build PonWrt for ZNXT ZN515XG-D → Run workflow
-3. core_profile 选 lean（默认）/ none / full
-4. 等待约 1.5 至 3 小时，下载 artifact：zn515xg-d-ponwrt-lean
+2. 仓库 → Actions → Build PonWrt (Airoha AN7581) → Run workflow
+3. 机型选 znxt_zn515xg-d（本版已无 core_profile 之分：只有 sing-box + mihomo 两个核心）
+4. 等待约 1.5 至 3 小时，下载 artifact：ponwrt-znxt_zn515xg-d
 5. 内含 *-sysupgrade.itb、SHA256SUMS、config.full、build.log
 
 ### 方式 B：本机 WSL（需先解除 wsl.exe 黑名单）
@@ -64,5 +64,5 @@
 - 后缀是 .itb（本机型不是 .bin）
 - 包列表含：airoha-ponctl、ppp-mod-pppoe、odhcpd、dnsmasq-full、firewall4、
   kmod-tun、kmod-nft-tproxy、luci-app-iptv、igmpproxy、
-  luci-app-passwall、luci-app-openclash
-- 代理服务默认关闭（逻辑在 files/etc/uci-defaults/99-zn515xg-d-no-proxy-autostart）
+  luci-app-homeproxy、luci-app-openclash、luci-app-nikki
+- 代理服务默认关闭（逻辑在 files/etc/uci-defaults/zz-zn515xg-d-no-proxy-autostart）
