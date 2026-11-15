@@ -1,51 +1,49 @@
 #!/bin/sh
-# ZNXT ZN515XG-D / Airoha AN7581 —— 转发与卸载相关的首次启动默认值
+# ZNXT ZN515XG-D / Airoha AN7581 —— 转发、卸载与 CPU 调频默认值
 #
-# 【背景：无线到底能不能走 NPU？不能，而且不是配置问题】
+# 【NPU / 无线卸载：结论没变，补上 2026-11-15 的实机数据】
+#   1. NPU 硬件与驱动都是好的：dmesg 里 airoha-npu fw 1456.62，
+#      /sys/kernel/debug/ppe/config 显示 npu_attached: 1，时钟 800MHz。
+#      但 ppe/entries 里全是 UNB 且 packets=0 bytes=0 —— 表项建了却没
+#      真正硬件转发。A/B 实测：开 flow_offloading_hw 反而从 91-115 Mbps
+#      掉到 54-62 Mbps（约 -40%）。故本版把硬件卸载**恒关**。
+#   2. MT7916D/mt7915 没有 HW-RRO，mt76 源码里 NPU 只接 mt7996 分支，
+#      无线侧永远不可能走 NPU/WED；唯一有效加速是软件 flow offload。
+#   3. 软件 flow offload 让已建立的流绕过 netfilter，与 TPROXY/REDIRECT
+#      类代理互斥；但 HomeProxy 的 **TUN 模式**流量走 singtun0（用户态），
+#      不进 fw4 forward flowtable，因此可以与卸载共存。
+#      该组合 2026-11-15 已真机验证：Google/YouTube 200、国内直连正常、
+#      homeproxy_mangle_tun 计数器显示国外流量仍打 mark 走 TUN、
+#      conntrack 出现 61-66 条 OFFLOAD 条目。
 #
-#   1. NPU 本身是好的：DTS 里 &npu 和 &eth 都是 status="okay"，
-#      内核 CONFIG_NET_AIROHA_NPU=y，NPU 固件包也在 rootfs 里。
-#      → 有线侧（PPE）的硬件加速是可用的。
-#   2. 但无线接不上去。mt76 源码核实（openwrt/mt76 @ be5ce79）：
-#        * 整个 mt7915/ 目录 grep -i npu = 0 行
-#        * NPU 只接在 mt7996 分支：Makefile 里
-#            ifdef CONFIG_PACKAGE_kmod-mt7996e
-#              ifdef CONFIG_TARGET_airoha_an7581
-#                PKG_MAKE_FLAGS += CONFIG_MT76_NPU=y CONFIG_MT7996_NPU=y
-#        * 更硬的一条：mt76_npu_init() 里设置了
-#            dev->hwrro_mode = is_mt7996(dev) ? MT76_HWRRO_V3 : MT76_HWRRO_V3_1;
-#          而 mt7915 驱动**从不**设置 hwrro_mode，一直是 MT76_HWRRO_OFF。
-#          NPU 卸载依赖硬件收包重排（HW-RRO），MT7915/7916 不具备。
-#      → 结论：MT7916D 的无线流量无法走 NPU，任何改配置的做法都不成立。
-#   3. 无线侧唯一可用的加速 = **软件 flow offload**（nf_flow_table 快速路径）。
-#      但它的代价是让已建立的流绕过 netfilter，而代理插件全靠 nftables 工作。
+# 【本固件策略（2026-11-15 版）】
+#   - 出厂默认 flow_offloading=1 / flow_offloading_hw=0 / proxy_mode=tun。
+#     HomeProxy 出厂 main_node=nil 不接管流量，此时开卸载完全安全；
+#     用户若启用 OpenClash/Nikki，或把 HomeProxy 切回 redirect/tproxy，
+#     offload-guard 会自动把卸载关掉。
+#   - packet steering + irqbalance 默认开（不绕过 netfilter，零冲突）。
+#   - 新增 /etc/init.d/zn515xg-d-tuning 锁 CPU performance。
 #
-# 【本固件采取的策略】
-#   - 无线/有线加速用软件 flow offload，但由 /etc/init.d/offload-guard
-#     与代理开关自动互斥：代理开 → 关 offload；代理关 → 开 offload。
-#   - 这里只写入**保守的初始状态**（关闭），开机时由 offload-guard 按
-#     实际代理状态再决定。即使 guard 没跑起来，也停在"不影响代理"的安全侧。
-#   - 另开 packet steering（RPS/XPS 多核分摊软中断）与 irqbalance。
-#     这两项**不绕过 netfilter**，对代理完全无害，是无线吞吐的真正增益来源。
-#
-# 【2026-11-12 起：升级幂等保护】
-#   uci-defaults 在 sysupgrade 保留配置后仍会重跑（新 rootfs 里的脚本是新的）。
-#   原版会无条件把 flow_offloading / packet_steering / irqbalance 写回默认值，
-#   把用户改过的设置抹掉。现在默认值只在「全新刷机」时写；升级后只做
-#   第 4 节的 offload-guard enable（这是固件自带服务，随固件启用是合理的）。
-#   与 zz-zn515xg-d-no-proxy-autostart 共用 /etc/zn515xg-d-firstboot 标记，
-#   该标记已列入 /etc/sysupgrade.conf 的跨升级保留清单。
-#   字母序上本脚本先于 no-proxy-autostart 执行，因此这里只**读**标记、不创建。
+# 【升级幂等保护】
+#   uci-defaults 在 sysupgrade 保留配置后仍会重跑；默认值只在「全新刷机」
+#   时写，升级后不改用户设置。第 4/5/6 节是固件自带服务的 enable、闲置
+#   服务整理与历史清单清理，每次刷机后都做（幂等）。
 # ---------------------------------------------------------------------------
 
 MARK=/etc/zn515xg-d-firstboot
 
+# 是否与卸载冲突的代理在用。HomeProxy 的 TUN / redirect_tun 不算冲突，
+# 与 /usr/sbin/offload-switch 的 proxy_enabled() 判定保持一致。
 proxy_is_enabled() {
     [ "$(uci -q get openclash.config.enable 2>/dev/null)" = "1" ] && return 0
     [ "$(uci -q get nikki.config.enabled 2>/dev/null)" = "1" ] && return 0
-    # HomeProxy 没有 enabled 开关，main_node != nil 才算在用
     n="$(uci -q get homeproxy.config.main_node 2>/dev/null)"
-    [ -n "$n" ] && [ "$n" != "nil" ] && return 0
+    if [ -n "$n" ] && [ "$n" != "nil" ]; then
+        case "$(uci -q get homeproxy.config.proxy_mode 2>/dev/null)" in
+            tun|redirect_tun) ;;   # TUN 可与软件 offload 共存
+            *) return 0 ;;
+        esac
+    fi
     return 1
 }
 
@@ -54,12 +52,12 @@ APPLY_DEFAULTS=1
 proxy_is_enabled && APPLY_DEFAULTS=0
 
 if [ "$APPLY_DEFAULTS" = "1" ]; then
-    # 1) flow offload：初始写 0（安全侧），开机后由 offload-guard 自动决定
+    # 1) 软件 flow offload 默认开；硬件 NPU 卸载恒关（实测降速 40%）
     if [ -f /etc/config/firewall ]; then
         uci -q get firewall.@defaults[0] >/dev/null 2>&1 || uci -q add firewall defaults >/dev/null 2>&1
-        uci -q set firewall.@defaults[0].flow_offloading='0'
+        uci -q set firewall.@defaults[0].flow_offloading='1'
         uci -q set firewall.@defaults[0].flow_offloading_hw='0'
-        # fullcone 是 PonWrt 自带默认值（1），保留不动：它只影响 NAT 行为，
+        # fullcone 是 PonWrt 自带默认值（1），保留不动：只影响 NAT 行为，
         # 与 flow offload 无关，对游戏/PT 有好处。
         uci -q commit firewall
     fi
@@ -70,7 +68,6 @@ if [ "$APPLY_DEFAULTS" = "1" ]; then
     uci -q commit network
 
     # 3) irqbalance：把 PCIe 无线网卡与以太网口的中断摊到 4 个 A53 核上
-    #    出厂 /etc/config/irqbalance 是 enabled '0'，这里打开
     if [ -f /etc/config/irqbalance ]; then
         uci -q set irqbalance.irqbalance.enabled='1'
         uci -q commit irqbalance
@@ -83,12 +80,51 @@ else
     logger -t zn515xg-d-net-tuning '后台升级后的重启：保留用户自定义的网络/卸载设置' 2>/dev/null || :
 fi
 
-# 4) 启用 offload-guard（START=89，早于代理的 START=99）
-#    每次启动都做：新 rootfs 里的 init.d 脚本需要重新 enable，且这是固件自带服务。
-if [ -f /etc/init.d/offload-guard ]; then
-    chmod +x /etc/init.d/offload-guard 2>/dev/null
-    chmod +x /usr/sbin/offload-switch 2>/dev/null
-    /etc/init.d/offload-guard enable
+# 4) 启用固件自带服务（每次刷机后都做，新 rootfs 的 init.d 需要重新 enable）
+for f in /etc/init.d/offload-guard /etc/init.d/zn515xg-d-tuning /usr/sbin/offload-switch; do
+    [ -f "$f" ] && chmod +x "$f" 2>/dev/null
+done
+[ -f /etc/init.d/offload-guard ] && /etc/init.d/offload-guard enable
+[ -f /etc/init.d/zn515xg-d-tuning ] && /etc/init.d/zn515xg-d-tuning enable
+
+# 5) 停用确认闲置的服务（家用单 WAN 场景，512MB 内存）
+#    radius / airoha-pon-debug 是运营商调试与认证服务，家用无用；
+#    独立 sing-box init.d 与 HomeProxy 自带实例无关，留着只会多一个空服务
+#    （需要独立使用时 /etc/init.d/sing-box enable 即可恢复）。
+#    IPTV 一旦被用户启用就完全不动 iptv / igmpproxy。
+for s in radius airoha-pon-debug sing-box; do
+    [ -f "/etc/init.d/$s" ] && {
+        "/etc/init.d/$s" stop >/dev/null 2>&1
+        "/etc/init.d/$s" disable >/dev/null 2>&1
+    }
+done
+if [ "$(uci -q get iptv.config.enabled 2>/dev/null)" != "1" ]; then
+    for s in iptv igmpproxy; do
+        [ -f "/etc/init.d/$s" ] && {
+            "/etc/init.d/$s" stop >/dev/null 2>&1
+            "/etc/init.d/$s" disable >/dev/null 2>&1
+        }
+    done
 fi
+
+# 6) 清理历史 sysupgrade.conf 里「保留程序文件」的条目
+#    旧版实机为保住手工补丁，把 scripts/、ruleset/、init.d、rc.local、
+#    offload-switch 列进了保留清单；本版已把这些修复固化进 rootfs，升级时
+#    若继续保留，旧文件会反向覆盖新版。只删精确匹配行，不动用户其他条目。
+cleanup_sysupgrade_conf() {
+    local f=/etc/sysupgrade.conf t
+    [ -f "$f" ] || return 0
+    t="$f.tmp.$$"
+    grep -vxF \
+        -e '/etc/homeproxy/' \
+        -e '/etc/homeproxy/ruleset/' \
+        -e '/etc/homeproxy/scripts/generate_client.uc' \
+        -e '/etc/homeproxy/scripts/firewall_post.ut' \
+        -e '/etc/init.d/homeproxy' \
+        -e '/usr/sbin/offload-switch' \
+        -e '/etc/rc.local' \
+        "$f" > "$t" 2>/dev/null && mv "$t" "$f" || rm -f "$t"
+}
+cleanup_sysupgrade_conf
 
 exit 0

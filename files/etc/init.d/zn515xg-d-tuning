@@ -1,0 +1,29 @@
+#!/bin/sh /etc/rc.common
+# ZNXT ZN515XG-D / Airoha AN7581 —— 每次开机的性能策略
+#
+# 为什么需要独立 init.d，而不是只写 rc.local：
+#   /etc/rc.local 是 base-files 的 conffile，sysupgrade 保留配置时会把用户
+#   设备上的旧版带过来，新固件写进去的调频策略可能被旧文件覆盖。本文件是
+#   overlay 提供的程序文件（不是 conffile），由 uci-defaults 在每次刷机后
+#   enable，之后每次开机由 rc.d 执行，不受 conffile 保留影响。
+#
+# 实测依据（2026-11-15，AN7581 / 4x Cortex-A53 / 1.2GHz，光猫自身 8 并发）：
+#   ondemand     192 Mbps
+#   performance  412 / 450 Mbps
+#   cpufreq-dt 的 cpuinfo_transition_latency = 1000000us（1 秒），突发流量
+#   还没升频就结束了，这是「多人游戏 + 下载时很慢」的隐藏根因之一。
+#
+# 代价：4 核长期 1.2GHz，功耗与温度略升；设备有 airoha_fan 风扇服务，
+#       且 512MB 内存下 CPU 余量本来就是转发瓶颈，收益远大于代价。
+
+START=11
+
+start() {
+    local c
+    for c in /sys/devices/system/cpu/cpu*/cpufreq/scaling_governor; do
+        [ -w "$c" ] && echo performance > "$c" 2>/dev/null
+    done
+    # 512MB 内存：稍微偏向回收 dentry/inode 缓存，降低长期运行后的 OOM 概率。
+    # 不开 zram（无 swap，且 CPU 余量要留给转发），不改 swappiness（无意义）。
+    sysctl -w vm.vfs_cache_pressure=150 >/dev/null 2>&1
+}

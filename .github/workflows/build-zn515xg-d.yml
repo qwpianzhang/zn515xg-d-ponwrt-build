@@ -131,23 +131,39 @@ jobs:
             echo "sysupgrade -v /tmp/sysupgrade.itb"
             echo '```'
             echo
-            echo "### 本版变更：HomeProxy 替代 PassWall2"
+            echo "### 本版变更：HomeProxy TUN 开箱可用 + 卸载共存 + CPU 调频"
             echo
-            echo "**PassWall / PassWall2 整套移除**（前端、xray-core、haproxy、chinadns-ng、"
-            echo "tcping、geoview 与两个 passwall feed），新增 \`luci-app-homeproxy\` 及中文包。"
-            echo "HomeProxy 是 luci feed 自带的 sing-box 前端，依赖 \`sing-box\` / \`firewall4\` /"
-            echo "\`kmod-nft-tproxy\` / \`ucode-mod-digest\`，配置页比 PassWall2 精简。"
+            echo "上一版在真机切换 HomeProxy 时踩到 4 个启动缺陷，本版把它们全部固化进固件，"
+            echo "刷机后不需要再跑任何补丁脚本。"
             echo
-            echo "HomeProxy **没有 enabled 主开关**：init.d 靠 \`homeproxy.config.main_node\` 是否为"
-            echo "\`nil\` 决定是否启动，出厂就是 nil（LuCI 主节点选 'nil' = Disable the service）。"
-            echo "因此编入即默认不接管流量，不需要 disable init.d；配好节点后能正常开机自启。"
-            echo "入口：服务 → HomeProxy。三个代理仍建议只启用一个。"
+            echo "**① 规则集与 DNS 黑洞**：上一版 generate_client.uc 把 3 个 geoip/geosite"
+            echo "规则集写成 remote + download_detour: main-out，启动时必须走尚未连上的代理"
+            echo "去下载，形成死循环；而 dnsmasq 已被指向 5333，导致全网 DNS 失效。本版把"
+            echo "SRS 二进制规则集直接打包进 rootfs，改为 type: local + 本地 path。"
             echo
-            echo "**无线流量卸载与代理共存**：默认仍由 offload-switch 互斥（代理开→关 offload）。"
-            echo "想两者兼得可把 HomeProxy 的 \`proxy_mode\` 设为 \`tun\`：代理流量走 singtun0 由"
-            echo "sing-box 用户态接管，不进 fw4 的 forward flowtable，直连/国内流量仍可卸载；"
-            echo "再用 \`offload-switch on -f\` 开启并实测。该组合未实机验证，故默认不启用，"
-            echo "详见刷机说明 §9。"
+            echo "**② 所有出站被内核拒绝（EPERM）**：firewall_post.ut 在 TUN 模式下把本机"
+            echo "mangle_output 也挂上 tun 分流链，给 sing-box 自己发出的包打 mark 绕回"
+            echo "singtun0。本版给 mangle_output 加 meta skuid 0 return 豁免本机进程。"
+            echo
+            echo "**③ ujail 与运行目录**：init.d 原先只按带空格的 JSON 判断 TUN，紧凑 JSON"
+            echo "匹配不上；本版在 tun / redirect_tun 下直接跳过 ujail，并由 rc.local 兜底"
+            echo "创建 /var/run/homeproxy。同时不再生成 sing-box 1.14 不接受、会让"
+            echo "sing-box check FATAL 的 disable_mtu_discovery 字段。"
+            echo
+            echo "**④ 卸载策略修正（已实机验证，不再是推演）**：HomeProxy TUN 可与软件"
+            echo "flow offload 共存，出厂默认 flow_offloading=1 / flow_offloading_hw=0 /"
+            echo "proxy_mode=tun、ipv6_support=0、log_level=warn，main_node 仍为 nil 不接管。"
+            echo "A/B 实测硬件 NPU 卸载在 PPPoE+WiFi 组合下反而降速约 40%"
+            echo "（54-62 vs 91-115 Mbps），故脚本固定 hw 恒关；offload-guard 不再误关卸载。"
+            echo
+            echo "**⑤ CPU 调频（新发现的隐藏瓶颈）**：cpufreq-dt 的 ondemand 升频延迟 1 秒，"
+            echo "突发流量来不及升频，8 并发仅 192 Mbps；新增 init.d 锁 performance 1.2GHz"
+            echo "后 412-450 Mbps。默认停用 radius / airoha-pon-debug / 独立 sing-box init.d，"
+            echo "IPTV 未启用时停用 iptv / igmpproxy。"
+            echo
+            echo "**⑥ 升级清单修正**：/etc/homeproxy/ 整目录不再列入 sysupgrade.conf，否则"
+            echo "升级会把用户设备上的旧脚本覆盖回新固件；uci-defaults 会幂等清理历史条目。"
+            echo
             echo
             echo "### 已内置：MWAN3 多 WAN"
             echo

@@ -1,16 +1,21 @@
 #!/bin/sh
-# ZNXT ZN515XG-D / FiberHome HG5585F 三网通用固件 —— 每次开机执行
+# ZNXT ZN515XG-D / Airoha AN7581 —— 每次开机的兜底（幂等）
 #
-# 2026-11-14：PassWall / PassWall2 已整体移除，原先这里为绕开 PassWall2
-# ln_run() 而重建 /tmp/etc/passwall2/bin 的补丁随之删除（连同 uci-defaults
-# 里的核心软链双保险）。那段逻辑只为 /tmp 下那个历史目录服务，与 HomeProxy
-# 无关，留着只会平白多建一个空目录。
-#
-# 现在只做一件幂等的小事：确保 HomeProxy 的运行目录存在。它的 init.d 自己
-# 也会 mkdir -p /var/run/homeproxy，这里只是开机顺序上的兜底。
+# 1) HomeProxy 运行目录：init.d 自己也会 mkdir，这里补开机顺序上的兜底；
+#    chown 给 sing-box 用户，避免日志 / 配置写不进去。
+# 2) CPU 调频：cpufreq-dt 的 ondemand 升频延迟 1 秒
+#    (cpuinfo_transition_latency=1000000)，突发下载 / 多人游戏来不及升频；
+#    实机实测 8 并发 192 Mbps，锁 performance(1.2GHz) 后 412-450 Mbps。
+#    固件另带 /etc/init.d/zn515xg-d-tuning 做同一件事，两处幂等互不冲突
+#    （rc.local 是 conffile，升级时可能被旧版覆盖，所以必须有 init.d 兜底）。
 # ---------------------------------------------------------------------------
 
 mkdir -p /var/run/homeproxy 2>/dev/null
 chmod 0755 /var/run/homeproxy 2>/dev/null
+chown sing-box:sing-box /var/run/homeproxy 2>/dev/null
+
+for c in /sys/devices/system/cpu/cpu*/cpufreq/scaling_governor; do
+    [ -w "$c" ] && echo performance > "$c" 2>/dev/null
+done
 
 exit 0

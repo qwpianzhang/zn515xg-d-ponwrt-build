@@ -77,6 +77,13 @@ if needs_firstboot_init; then
     #    只在全新刷机分支里写，升级分支绝不碰（用户可能已经配好节点）。
     if [ -f /etc/config/homeproxy ]; then
         uci -q set homeproxy.config.main_node='nil'
+        # 出厂即选可与软件 flow offload 共存的 TUN 模式（2026-11-15 实机验证）。
+        # 上游默认是 redirect_tproxy，那个模式会与 offload 互斥。
+        uci -q set homeproxy.config.proxy_mode='tun'
+        # WAN 无 IPv6 出口时，上游默认会不断尝试 v6 出站并刷屏；关掉。
+        uci -q set homeproxy.config.ipv6_support='0'
+        # 512MB 设备：日志默认 info 会频繁写 /var/run，降到 warn。
+        uci -q set homeproxy.config.log_level='warn'
         uci -q commit homeproxy 2>/dev/null
     fi
 

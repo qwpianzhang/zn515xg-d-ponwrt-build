@@ -3,3 +3,7 @@
 *.seed text eol=lf
 *.conf text eol=lf
 *.yml text eol=lf
+# sing-box 规则集是 SRS 二进制（魔数 53 52 53 01 / 02），禁止任何换行转换；
+# 一旦被 text=auto 改写，HomeProxy 加载规则集会失败并把 DNS 拖进黑洞。
+*.srs binary
+*.bin binary
