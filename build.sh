@@ -507,7 +507,7 @@ verify() {
   chk "本地 geosite-cn 规则集已打包"      "test -s files/etc/homeproxy/ruleset/geosite-cn.srs"
   chk "本地 geosite-noncn 规则集已打包"   "test -s files/etc/homeproxy/ruleset/geosite-noncn.srs"
   chk "规则集魔数为 SRS 二进制"            "[ \"\$(head -c3 files/etc/homeproxy/ruleset/geoip-cn.srs)\" = SRS ]"
-  chk ".gitattributes 声明 .srs 为二进制"  "grep -q 'srs binary' .gitattributes"
+  chk ".gitattributes 声明 .srs 为二进制"  "grep -q 'srs binary' $HERE/.gitattributes"
   chk "内置规则集改为 local 且无 main-out 死循环" "grep -q 'type: .local.' files/etc/homeproxy/scripts/generate_client.uc && ! grep -q 'download_detour: .main-out.' files/etc/homeproxy/scripts/generate_client.uc"
   chk "规则集路径指向固件内文件"           "grep -q '/etc/homeproxy/ruleset/geoip-cn.srs' files/etc/homeproxy/scripts/generate_client.uc"
   chk "不再生成 sing-box 不认的 disable_mtu_discovery" "! grep -q 'disable_mtu_discovery: strToBool' files/etc/homeproxy/scripts/generate_client.uc"
